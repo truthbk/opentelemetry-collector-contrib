@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/open-telemetry/opamp-go/protobufs"
+	"github.com/open-telemetry/opamp-go/signing"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/config/confignet"
@@ -558,6 +559,92 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+// TestValidate_Signing verifies that signing-related configuration is validated
+// correctly. These tests are written before the implementation (TDD) and are
+// expected to fail until validateSigning() is fully implemented.
+func TestValidate_Signing(t *testing.T) {
+	tlsConfig := configtls.NewDefaultClientConfig()
+	tlsConfig.InsecureSkipVerify = true
+
+	baseConfig := func(signingCfg Signing, caps Capabilities) Supervisor {
+		return Supervisor{
+			Server: OpAMPServer{
+				Endpoint: "wss://localhost:9090/opamp",
+				TLS:      tlsConfig,
+			},
+			Agent: Agent{
+				Executable:              "",
+				OrphanDetectionInterval: 5 * time.Second,
+				ConfigApplyTimeout:      2 * time.Second,
+				BootstrapTimeout:        5 * time.Second,
+			},
+			Capabilities: caps,
+			Signing:      signingCfg,
+			Storage:      Storage{Directory: "/etc/opamp-supervisor/storage"},
+		}
+	}
+
+	t.Run("capability set without ca_cert_file returns error", func(t *testing.T) {
+		cfg := baseConfig(
+			Signing{CACertFile: ""},
+			Capabilities{VerifiesRemoteConfigSignature: true},
+		)
+		cfg.Agent.Executable = writeTempExecutable(t)
+		err := cfg.Validate()
+		require.ErrorContains(t, err, "verifies_remote_config_signature")
+		require.ErrorContains(t, err, "ca_cert_file")
+	})
+
+	t.Run("capability set with nonexistent ca_cert_file returns error", func(t *testing.T) {
+		cfg := baseConfig(
+			Signing{CACertFile: "/nonexistent/path/ca.pem"},
+			Capabilities{VerifiesRemoteConfigSignature: true},
+		)
+		cfg.Agent.Executable = writeTempExecutable(t)
+		err := cfg.Validate()
+		require.ErrorContains(t, err, "ca_cert_file")
+	})
+
+	t.Run("capability set with valid PEM file succeeds", func(t *testing.T) {
+		caPath := writeTempCACert(t)
+		cfg := baseConfig(
+			Signing{CACertFile: caPath},
+			Capabilities{VerifiesRemoteConfigSignature: true},
+		)
+		cfg.Agent.Executable = writeTempExecutable(t)
+		require.NoError(t, cfg.Validate())
+	})
+
+	t.Run("ca_cert_file set without capability succeeds", func(t *testing.T) {
+		caPath := writeTempCACert(t)
+		cfg := baseConfig(
+			Signing{CACertFile: caPath},
+			Capabilities{VerifiesRemoteConfigSignature: false},
+		)
+		cfg.Agent.Executable = writeTempExecutable(t)
+		require.NoError(t, cfg.Validate())
+	})
+}
+
+// writeTempExecutable writes an empty executable file to a temp directory and returns its path.
+func writeTempExecutable(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "binary")
+	require.NoError(t, os.WriteFile(p, []byte{}, 0o600))
+	return p
+}
+
+// writeTempCACert generates an ECDSA CA certificate and writes its PEM to a temp
+// file, returning the path. Used in signing validation tests.
+func writeTempCACert(t *testing.T) string {
+	t.Helper()
+	_, _, caPEM, err := signing.GenerateECDSACA()
+	require.NoError(t, err)
+	p := filepath.Join(t.TempDir(), "ca.pem")
+	require.NoError(t, os.WriteFile(p, caPEM, 0o600))
+	return p
+}
+
 func TestOpAMPServer_OpaqueHeaders(t *testing.T) {
 	testCases := []struct {
 		name     string
@@ -626,6 +713,17 @@ func TestCapabilities_SupportedCapabilities(t *testing.T) {
 		{
 			name:                      "Empty capabilities",
 			capabilities:              Capabilities{},
+			expectedAgentCapabilities: protobufs.AgentCapabilities_AgentCapabilities_ReportsStatus,
+		},
+		{
+			name:         "VerifiesRemoteConfigSignature bit set",
+			capabilities: Capabilities{VerifiesRemoteConfigSignature: true},
+			expectedAgentCapabilities: protobufs.AgentCapabilities_AgentCapabilities_ReportsStatus |
+				protobufs.AgentCapabilities_AgentCapabilities_VerifiesRemoteConfigSignature,
+		},
+		{
+			name:                      "VerifiesRemoteConfigSignature bit absent when false",
+			capabilities:              Capabilities{VerifiesRemoteConfigSignature: false},
 			expectedAgentCapabilities: protobufs.AgentCapabilities_AgentCapabilities_ReportsStatus,
 		},
 		{

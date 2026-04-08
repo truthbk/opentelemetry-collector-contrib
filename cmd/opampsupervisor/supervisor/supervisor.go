@@ -34,6 +34,7 @@ import (
 	"github.com/open-telemetry/opamp-go/protobufs"
 	"github.com/open-telemetry/opamp-go/server"
 	serverTypes "github.com/open-telemetry/opamp-go/server/types"
+	"github.com/open-telemetry/opamp-go/signing"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configopaque"
 	"go.opentelemetry.io/collector/config/configtelemetry"
@@ -2163,6 +2164,13 @@ func (*Supervisor) findRandomPort() (int, error) {
 func (s *Supervisor) getTracer() trace.Tracer {
 	tracer := s.telemetrySettings.TracerProvider.Tracer("github.com/open-telemetry/opentelemetry-collector-contrib/cmd/opampsupervisor")
 	return tracer
+}
+
+// buildSignatureVerifier constructs an X509SignatureVerifier from the configured
+// CA certificate file, or returns nil if no signing is configured.
+// This is a stub; the implementation will be added in a subsequent commit.
+func (s *Supervisor) buildSignatureVerifier() (signing.SignatureVerifier, error) {
+	return nil, nil
 }
 
 // The default koanf behavior is to override lists in the config.

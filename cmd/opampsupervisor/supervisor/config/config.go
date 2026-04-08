@@ -38,9 +38,19 @@ type Supervisor struct {
 	Server       OpAMPServer  `mapstructure:"server"`
 	Agent        Agent        `mapstructure:"agent"`
 	Capabilities Capabilities `mapstructure:"capabilities"`
+	Signing      Signing      `mapstructure:"signing"`
 	Storage      Storage      `mapstructure:"storage"`
 	Telemetry    Telemetry    `mapstructure:"telemetry"`
 	HealthCheck  HealthCheck  `mapstructure:"healthcheck"`
+}
+
+// Signing contains configuration for X.509 signature verification of
+// remote configurations received from the OpAMP server.
+type Signing struct {
+	// CACertFile is the path to a PEM-encoded CA certificate file used as
+	// the trust anchor for verifying remote config signatures. Required when
+	// VerifiesRemoteConfigSignature capability is enabled.
+	CACertFile string `mapstructure:"ca_cert_file"`
 }
 
 // Load loads the Supervisor config from a file.
@@ -94,6 +104,16 @@ func (s Supervisor) Validate() error {
 		return err
 	}
 
+	if err := s.validateSigning(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateSigning checks that the signing configuration is consistent.
+// It is a stub that will be implemented in a subsequent commit.
+func (s Supervisor) validateSigning() error {
 	return nil
 }
 
@@ -117,6 +137,10 @@ type Capabilities struct {
 	ReportsRemoteConfig            bool `mapstructure:"reports_remote_config"`
 	ReportsAvailableComponents     bool `mapstructure:"reports_available_components"`
 	ReportsHeartbeat               bool `mapstructure:"reports_heartbeat"`
+	// VerifiesRemoteConfigSignature enables X.509 signature verification of
+	// remote configurations received from the OpAMP server. When true,
+	// signing.ca_cert_file must also be set.
+	VerifiesRemoteConfigSignature bool `mapstructure:"verifies_remote_config_signature"`
 }
 
 func (c Capabilities) SupportedCapabilities() protobufs.AgentCapabilities {

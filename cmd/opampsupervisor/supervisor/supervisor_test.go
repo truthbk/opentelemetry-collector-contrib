@@ -29,6 +29,7 @@ import (
 	"github.com/open-telemetry/opamp-go/client/types"
 	"github.com/open-telemetry/opamp-go/protobufs"
 	serverTypes "github.com/open-telemetry/opamp-go/server/types"
+	"github.com/open-telemetry/opamp-go/signing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
@@ -2283,4 +2284,80 @@ func TestRemoteConfigConcurrentAccess(t *testing.T) {
 
 	close(startSignal)
 	wg.Wait()
+}
+
+// TestBuildSignatureVerifier_* tests are written before the implementation (TDD).
+// They are expected to fail until buildSignatureVerifier() is fully implemented.
+
+func TestBuildSignatureVerifier_NoCACertFile(t *testing.T) {
+	s := &Supervisor{config: config.Supervisor{}}
+	verifier, err := s.buildSignatureVerifier()
+	require.NoError(t, err)
+	require.Nil(t, verifier, "expected nil verifier when no CACertFile configured")
+}
+
+func TestBuildSignatureVerifier_ValidPEM(t *testing.T) {
+	_, _, caPEM, err := signing.GenerateECDSACA()
+	require.NoError(t, err)
+
+	caPath := filepath.Join(t.TempDir(), "ca.pem")
+	require.NoError(t, os.WriteFile(caPath, caPEM, 0o600))
+
+	s := &Supervisor{config: config.Supervisor{
+		Signing: config.Signing{CACertFile: caPath},
+	}}
+	verifier, err := s.buildSignatureVerifier()
+	require.NoError(t, err)
+	require.NotNil(t, verifier, "expected non-nil verifier for valid CA cert file")
+}
+
+func TestBuildSignatureVerifier_MissingFile(t *testing.T) {
+	s := &Supervisor{config: config.Supervisor{
+		Signing: config.Signing{CACertFile: "/nonexistent/ca.pem"},
+	}}
+	_, err := s.buildSignatureVerifier()
+	require.Error(t, err)
+	require.ErrorContains(t, err, "ca_cert_file")
+}
+
+func TestBuildSignatureVerifier_InvalidPEM(t *testing.T) {
+	caPath := filepath.Join(t.TempDir(), "bad.pem")
+	require.NoError(t, os.WriteFile(caPath, []byte("not a valid PEM"), 0o600))
+
+	s := &Supervisor{config: config.Supervisor{
+		Signing: config.Signing{CACertFile: caPath},
+	}}
+	_, err := s.buildSignatureVerifier()
+	require.Error(t, err)
+	require.ErrorContains(t, err, "no valid PEM")
+}
+
+func TestNewSupervisor_SigningEnabled_NoCAFile(t *testing.T) {
+	cfg := setupSupervisorConfig(t, configTemplate)
+	cfg.Capabilities.VerifiesRemoteConfigSignature = true
+	cfg.Signing.CACertFile = ""
+
+	// validateSigning must reject this configuration.
+	err := cfg.Validate()
+	require.ErrorContains(t, err, "verifies_remote_config_signature")
+	require.ErrorContains(t, err, "ca_cert_file")
+}
+
+func TestNewSupervisor_SigningEnabled_ValidCA(t *testing.T) {
+	_, _, caPEM, err := signing.GenerateECDSACA()
+	require.NoError(t, err)
+
+	caPath := filepath.Join(t.TempDir(), "ca.pem")
+	require.NoError(t, os.WriteFile(caPath, caPEM, 0o600))
+
+	cfg := setupSupervisorConfig(t, configTemplate)
+	cfg.Capabilities.VerifiesRemoteConfigSignature = true
+	cfg.Signing.CACertFile = caPath
+
+	require.NoError(t, cfg.Validate())
+
+	s := &Supervisor{config: cfg}
+	verifier, err := s.buildSignatureVerifier()
+	require.NoError(t, err)
+	require.NotNil(t, verifier, "expected non-nil verifier for valid CA cert")
 }
