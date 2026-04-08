@@ -482,6 +482,10 @@ func TestCapabilities_toAgentCapabilities_Signing(t *testing.T) {
 		result := caps.toAgentCapabilities()
 		assert.NotZero(t, result&protobufs.AgentCapabilities_AgentCapabilities_VerifiesRemoteConfigSignature,
 			"expected VerifiesRemoteConfigSignature bit to be set")
+		// AcceptsRemoteConfig must also be set so that receivedprocessor reaches
+		// the signing verification path (outer capability guard).
+		assert.NotZero(t, result&protobufs.AgentCapabilities_AgentCapabilities_AcceptsRemoteConfig,
+			"expected AcceptsRemoteConfig bit to be co-set with VerifiesRemoteConfigSignature")
 	})
 
 	t.Run("VerifiesRemoteConfigSignature bit absent when disabled", func(t *testing.T) {

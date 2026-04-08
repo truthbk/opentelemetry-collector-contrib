@@ -112,8 +112,16 @@ func (s Supervisor) Validate() error {
 }
 
 // validateSigning checks that the signing configuration is consistent:
-// the capability requires a CA cert file, and if a file is specified it must exist.
+//   - VerifiesRemoteConfigSignature requires AcceptsRemoteConfig, because the
+//     receivedprocessor guards signature verification behind the outer
+//     AcceptsRemoteConfig capability check; without it, signed configs are
+//     silently dropped before verification is attempted.
+//   - VerifiesRemoteConfigSignature requires a CA cert file.
+//   - If a CA cert file is specified it must exist on disk.
 func (s Supervisor) validateSigning() error {
+	if s.Capabilities.VerifiesRemoteConfigSignature && !s.Capabilities.AcceptsRemoteConfig {
+		return errors.New("capabilities::verifies_remote_config_signature requires capabilities::accepts_remote_config to be set")
+	}
 	if s.Capabilities.VerifiesRemoteConfigSignature && s.Signing.CACertFile == "" {
 		return errors.New("capabilities::verifies_remote_config_signature requires signing::ca_cert_file to be set")
 	}

@@ -584,10 +584,21 @@ func TestValidate_Signing(t *testing.T) {
 		}
 	}
 
+	t.Run("capability set without accepts_remote_config returns error", func(t *testing.T) {
+		cfg := baseConfig(
+			Signing{CACertFile: writeTempCACert(t)},
+			Capabilities{VerifiesRemoteConfigSignature: true, AcceptsRemoteConfig: false},
+		)
+		cfg.Agent.Executable = writeTempExecutable(t)
+		err := cfg.Validate()
+		require.ErrorContains(t, err, "verifies_remote_config_signature")
+		require.ErrorContains(t, err, "accepts_remote_config")
+	})
+
 	t.Run("capability set without ca_cert_file returns error", func(t *testing.T) {
 		cfg := baseConfig(
 			Signing{CACertFile: ""},
-			Capabilities{VerifiesRemoteConfigSignature: true},
+			Capabilities{VerifiesRemoteConfigSignature: true, AcceptsRemoteConfig: true},
 		)
 		cfg.Agent.Executable = writeTempExecutable(t)
 		err := cfg.Validate()
@@ -598,7 +609,7 @@ func TestValidate_Signing(t *testing.T) {
 	t.Run("capability set with nonexistent ca_cert_file returns error", func(t *testing.T) {
 		cfg := baseConfig(
 			Signing{CACertFile: "/nonexistent/path/ca.pem"},
-			Capabilities{VerifiesRemoteConfigSignature: true},
+			Capabilities{VerifiesRemoteConfigSignature: true, AcceptsRemoteConfig: true},
 		)
 		cfg.Agent.Executable = writeTempExecutable(t)
 		err := cfg.Validate()
@@ -609,7 +620,7 @@ func TestValidate_Signing(t *testing.T) {
 		caPath := writeTempCACert(t)
 		cfg := baseConfig(
 			Signing{CACertFile: caPath},
-			Capabilities{VerifiesRemoteConfigSignature: true},
+			Capabilities{VerifiesRemoteConfigSignature: true, AcceptsRemoteConfig: true},
 		)
 		cfg.Agent.Executable = writeTempExecutable(t)
 		require.NoError(t, cfg.Validate())

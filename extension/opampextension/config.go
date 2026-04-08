@@ -105,6 +105,13 @@ func (caps Capabilities) toAgentCapabilities() protobufs.AgentCapabilities {
 	}
 
 	if caps.VerifiesRemoteConfigSignature {
+		// VerifiesRemoteConfigSignature requires the agent to receive remote
+		// configs (AcceptsRemoteConfig) so that receivedprocessor can reach the
+		// signing verification path. Without AcceptsRemoteConfig the outer
+		// capability guard in receivedprocessor silently drops all
+		// AgentRemoteConfig messages before signature verification is attempted,
+		// making the VerifiesRemoteConfigSignature capability a no-op.
+		agentCapabilities |= protobufs.AgentCapabilities_AgentCapabilities_AcceptsRemoteConfig
 		agentCapabilities |= protobufs.AgentCapabilities_AgentCapabilities_VerifiesRemoteConfigSignature
 	}
 
