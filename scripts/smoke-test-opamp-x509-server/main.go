@@ -220,9 +220,4 @@ func main() {
 	log.Println("  -> FAILED ✓")
 
 	log.Println("SMOKE_TEST_PASS")
-
-	// Serve an HTTP health endpoint so the shell script can optionally poll.
-	http.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte("ok"))
-	})
 }
