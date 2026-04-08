@@ -6,7 +6,6 @@ package opampextension // import "github.com/open-telemetry/opentelemetry-collec
 import (
 	"context"
 	"crypto/sha256"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"maps"
@@ -724,13 +723,5 @@ func (o *opampAgent) buildSignatureVerifier() (signing.SignatureVerifier, error)
 	if o.cfg.Signing.CACertFile == "" {
 		return nil, nil
 	}
-	pemBytes, err := os.ReadFile(o.cfg.Signing.CACertFile)
-	if err != nil {
-		return nil, fmt.Errorf("signing: cannot read ca_cert_file %q: %w", o.cfg.Signing.CACertFile, err)
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(pemBytes) {
-		return nil, fmt.Errorf("signing: ca_cert_file %q contains no valid PEM certificates", o.cfg.Signing.CACertFile)
-	}
-	return signing.NewX509SignatureVerifier(pool), nil
+	return signing.VerifierFromFile(o.cfg.Signing.CACertFile)
 }
