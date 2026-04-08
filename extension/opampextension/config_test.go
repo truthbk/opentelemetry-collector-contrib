@@ -4,11 +4,13 @@
 package opampextension
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/open-telemetry/opamp-go/protobufs"
+	"github.com/open-telemetry/opamp-go/signing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/config/configopaque"
@@ -411,4 +413,81 @@ func TestCapabilities_toAgentCapabilities(t *testing.T) {
 			assert.Equalf(t, tt.want, caps.toAgentCapabilities(), "toAgentCapabilities()")
 		})
 	}
+}
+
+// TestConfig_Validate_Signing tests are written before the implementation (TDD)
+// and are expected to fail until validateSigning() is fully implemented.
+func TestConfig_Validate_Signing(t *testing.T) {
+	validServer := &OpAMPServer{
+		WS: &commonFields{Endpoint: "wss://127.0.0.1:4320/v1/opamp"},
+	}
+
+	t.Run("capability set without ca_cert_file returns error", func(t *testing.T) {
+		cfg := &Config{
+			Server:       validServer,
+			Capabilities: Capabilities{VerifiesRemoteConfigSignature: true},
+			Signing:      Signing{CACertFile: ""},
+		}
+		err := cfg.Validate()
+		require.Error(t, err)
+		require.ErrorContains(t, err, "verifies_remote_config_signature")
+		require.ErrorContains(t, err, "ca_cert_file")
+	})
+
+	t.Run("capability set with nonexistent ca_cert_file returns error", func(t *testing.T) {
+		cfg := &Config{
+			Server:       validServer,
+			Capabilities: Capabilities{VerifiesRemoteConfigSignature: true},
+			Signing:      Signing{CACertFile: "/nonexistent/path/ca.pem"},
+		}
+		err := cfg.Validate()
+		require.Error(t, err)
+		require.ErrorContains(t, err, "ca_cert_file")
+	})
+
+	t.Run("capability set with valid PEM file succeeds", func(t *testing.T) {
+		_, _, caPEM, err := signing.GenerateECDSACA()
+		require.NoError(t, err)
+		caPath := filepath.Join(t.TempDir(), "ca.pem")
+		require.NoError(t, os.WriteFile(caPath, caPEM, 0o600))
+
+		cfg := &Config{
+			Server:       validServer,
+			Capabilities: Capabilities{VerifiesRemoteConfigSignature: true},
+			Signing:      Signing{CACertFile: caPath},
+		}
+		require.NoError(t, cfg.Validate())
+	})
+
+	t.Run("ca_cert_file set without capability succeeds", func(t *testing.T) {
+		_, _, caPEM, err := signing.GenerateECDSACA()
+		require.NoError(t, err)
+		caPath := filepath.Join(t.TempDir(), "ca.pem")
+		require.NoError(t, os.WriteFile(caPath, caPEM, 0o600))
+
+		cfg := &Config{
+			Server:       validServer,
+			Capabilities: Capabilities{VerifiesRemoteConfigSignature: false},
+			Signing:      Signing{CACertFile: caPath},
+		}
+		require.NoError(t, cfg.Validate())
+	})
+}
+
+// TestCapabilities_toAgentCapabilities_Signing tests the VerifiesRemoteConfigSignature bit.
+// Written before the implementation (TDD) — expected to fail until the bit is added.
+func TestCapabilities_toAgentCapabilities_Signing(t *testing.T) {
+	t.Run("VerifiesRemoteConfigSignature bit set when enabled", func(t *testing.T) {
+		caps := Capabilities{VerifiesRemoteConfigSignature: true}
+		result := caps.toAgentCapabilities()
+		assert.NotZero(t, result&protobufs.AgentCapabilities_AgentCapabilities_VerifiesRemoteConfigSignature,
+			"expected VerifiesRemoteConfigSignature bit to be set")
+	})
+
+	t.Run("VerifiesRemoteConfigSignature bit absent when disabled", func(t *testing.T) {
+		caps := Capabilities{VerifiesRemoteConfigSignature: false}
+		result := caps.toAgentCapabilities()
+		assert.Zero(t, result&protobufs.AgentCapabilities_AgentCapabilities_VerifiesRemoteConfigSignature,
+			"expected VerifiesRemoteConfigSignature bit to be absent")
+	})
 }

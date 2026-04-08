@@ -22,6 +22,7 @@ import (
 	"github.com/open-telemetry/opamp-go/client"
 	"github.com/open-telemetry/opamp-go/client/types"
 	"github.com/open-telemetry/opamp-go/protobufs"
+	"github.com/open-telemetry/opamp-go/signing"
 	"github.com/shirou/gopsutil/v4/host"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componentstatus"
@@ -708,4 +709,11 @@ func convertComponentHealth(statusUpdate *status.AggregateStatus) *protobufs.Com
 	}
 
 	return componentHealth
+}
+
+// buildSignatureVerifier constructs an X509SignatureVerifier from the configured
+// CA certificate file, or returns nil if no signing is configured.
+// This is a stub; the implementation will be added in a subsequent commit.
+func (o *opampAgent) buildSignatureVerifier() (signing.SignatureVerifier, error) {
+	return nil, nil
 }

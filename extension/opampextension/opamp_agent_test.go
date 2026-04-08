@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/open-telemetry/opamp-go/client/types"
 	"github.com/open-telemetry/opamp-go/protobufs"
+	"github.com/open-telemetry/opamp-go/signing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
@@ -1009,4 +1010,44 @@ func newTestOpampAgent(cfg *Config, set extension.Settings, mockOpampClient *moc
 
 	o.lifetimeCtx, o.lifetimeCtxCancel = context.WithCancel(context.Background())
 	return o
+}
+
+// TestBuildSignatureVerifier_* tests are written before the implementation (TDD).
+// They are expected to fail until buildSignatureVerifier() is fully implemented.
+
+func TestExtension_BuildSignatureVerifier_NoCACertFile(t *testing.T) {
+	o := &opampAgent{cfg: &Config{}}
+	verifier, err := o.buildSignatureVerifier()
+	require.NoError(t, err)
+	require.Nil(t, verifier, "expected nil verifier when no CACertFile configured")
+}
+
+func TestExtension_BuildSignatureVerifier_ValidPEM(t *testing.T) {
+	_, _, caPEM, err := signing.GenerateECDSACA()
+	require.NoError(t, err)
+
+	caPath := filepath.Join(t.TempDir(), "ca.pem")
+	require.NoError(t, os.WriteFile(caPath, caPEM, 0o600))
+
+	o := &opampAgent{cfg: &Config{Signing: Signing{CACertFile: caPath}}}
+	verifier, err := o.buildSignatureVerifier()
+	require.NoError(t, err)
+	require.NotNil(t, verifier, "expected non-nil verifier for valid CA cert file")
+}
+
+func TestExtension_BuildSignatureVerifier_MissingFile(t *testing.T) {
+	o := &opampAgent{cfg: &Config{Signing: Signing{CACertFile: "/nonexistent/ca.pem"}}}
+	_, err := o.buildSignatureVerifier()
+	require.Error(t, err)
+	require.ErrorContains(t, err, "ca_cert_file")
+}
+
+func TestExtension_BuildSignatureVerifier_InvalidPEM(t *testing.T) {
+	caPath := filepath.Join(t.TempDir(), "bad.pem")
+	require.NoError(t, os.WriteFile(caPath, []byte("not a valid PEM"), 0o600))
+
+	o := &opampAgent{cfg: &Config{Signing: Signing{CACertFile: caPath}}}
+	_, err := o.buildSignatureVerifier()
+	require.Error(t, err)
+	require.ErrorContains(t, err, "no valid PEM")
 }

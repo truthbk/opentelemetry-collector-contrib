@@ -36,6 +36,10 @@ type Config struct {
 	// Capabilities contains options to enable a particular OpAMP capability
 	Capabilities Capabilities `mapstructure:"capabilities"`
 
+	// Signing contains configuration for X.509 signature verification of
+	// remote configurations received from the OpAMP server.
+	Signing Signing `mapstructure:"signing"`
+
 	// Agent descriptions contains options to modify the AgentDescription message
 	AgentDescription AgentDescription `mapstructure:"agent_description"`
 
@@ -47,6 +51,15 @@ type Config struct {
 
 	// PPIDPollInterval is the time between polling for whether PPID is running.
 	PPIDPollInterval time.Duration `mapstructure:"ppid_poll_interval"`
+}
+
+// Signing contains configuration for X.509 signature verification of
+// remote configurations received from the OpAMP server.
+type Signing struct {
+	// CACertFile is the path to a PEM-encoded CA certificate file used as
+	// the trust anchor for verifying remote config signatures. Required when
+	// VerifiesRemoteConfigSignature capability is enabled.
+	CACertFile string `mapstructure:"ca_cert_file"`
 }
 
 type AgentDescription struct {
@@ -67,6 +80,10 @@ type Capabilities struct {
 	ReportsAvailableComponents bool `mapstructure:"reports_available_components"`
 	// AcceptsRestartCommand enables the OpAMP AcceptsRestartCommand Capability (default: false)
 	AcceptsRestartCommand bool `mapstructure:"accepts_restart_command"`
+	// VerifiesRemoteConfigSignature enables X.509 signature verification of
+	// remote configurations received from the OpAMP server. When true,
+	// signing.ca_cert_file must also be set. (default: false)
+	VerifiesRemoteConfigSignature bool `mapstructure:"verifies_remote_config_signature"`
 }
 
 func (caps Capabilities) toAgentCapabilities() protobufs.AgentCapabilities {
@@ -233,5 +250,15 @@ func (cfg *Config) Validate() error {
 		}
 	}
 
+	if err := cfg.validateSigning(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateSigning checks that the signing configuration is consistent.
+// It is a stub that will be implemented in a subsequent commit.
+func (cfg *Config) validateSigning() error {
 	return nil
 }
