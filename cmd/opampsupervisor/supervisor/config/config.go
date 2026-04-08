@@ -111,9 +111,17 @@ func (s Supervisor) Validate() error {
 	return nil
 }
 
-// validateSigning checks that the signing configuration is consistent.
-// It is a stub that will be implemented in a subsequent commit.
+// validateSigning checks that the signing configuration is consistent:
+// the capability requires a CA cert file, and if a file is specified it must exist.
 func (s Supervisor) validateSigning() error {
+	if s.Capabilities.VerifiesRemoteConfigSignature && s.Signing.CACertFile == "" {
+		return errors.New("capabilities::verifies_remote_config_signature requires signing::ca_cert_file to be set")
+	}
+	if s.Signing.CACertFile != "" {
+		if _, err := os.Stat(s.Signing.CACertFile); err != nil {
+			return fmt.Errorf("signing::ca_cert_file: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -187,6 +195,10 @@ func (c Capabilities) SupportedCapabilities() protobufs.AgentCapabilities {
 	}
 	if c.ReportsHeartbeat {
 		supportedCapabilities |= protobufs.AgentCapabilities_AgentCapabilities_ReportsHeartbeat
+	}
+
+	if c.VerifiesRemoteConfigSignature {
+		supportedCapabilities |= protobufs.AgentCapabilities_AgentCapabilities_VerifiesRemoteConfigSignature
 	}
 
 	return supportedCapabilities

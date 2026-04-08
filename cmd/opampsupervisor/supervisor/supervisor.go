@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	_ "embed"
 	"errors"
 	"fmt"
@@ -720,6 +721,12 @@ func (s *Supervisor) startOpAMPClient() error {
 		d := time.Duration(s.heartbeatIntervalSeconds) * time.Second
 		settings.HeartbeatInterval = &d
 	}
+
+	verifier, err := s.buildSignatureVerifier()
+	if err != nil {
+		return fmt.Errorf("cannot build signature verifier: %w", err)
+	}
+	settings.SignatureVerifier = verifier
 
 	s.telemetrySettings.Logger.Debug("Starting OpAMP client...")
 	if err := s.opampClient.Start(s.runCtx, settings); err != nil {
@@ -2168,9 +2175,19 @@ func (s *Supervisor) getTracer() trace.Tracer {
 
 // buildSignatureVerifier constructs an X509SignatureVerifier from the configured
 // CA certificate file, or returns nil if no signing is configured.
-// This is a stub; the implementation will be added in a subsequent commit.
 func (s *Supervisor) buildSignatureVerifier() (signing.SignatureVerifier, error) {
-	return nil, nil
+	if s.config.Signing.CACertFile == "" {
+		return nil, nil
+	}
+	pemBytes, err := os.ReadFile(s.config.Signing.CACertFile)
+	if err != nil {
+		return nil, fmt.Errorf("signing: cannot read ca_cert_file %q: %w", s.config.Signing.CACertFile, err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pemBytes) {
+		return nil, fmt.Errorf("signing: ca_cert_file %q contains no valid PEM certificates", s.config.Signing.CACertFile)
+	}
+	return signing.NewX509SignatureVerifier(pool), nil
 }
 
 // The default koanf behavior is to override lists in the config.
