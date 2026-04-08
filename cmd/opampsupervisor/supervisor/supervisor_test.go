@@ -2286,9 +2286,6 @@ func TestRemoteConfigConcurrentAccess(t *testing.T) {
 	wg.Wait()
 }
 
-// TestBuildSignatureVerifier_* tests are written before the implementation (TDD).
-// They are expected to fail until buildSignatureVerifier() is fully implemented.
-
 func TestBuildSignatureVerifier_NoCACertFile(t *testing.T) {
 	s := &Supervisor{config: config.Supervisor{}}
 	verifier, err := s.buildSignatureVerifier()

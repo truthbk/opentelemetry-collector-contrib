@@ -415,8 +415,7 @@ func TestCapabilities_toAgentCapabilities(t *testing.T) {
 	}
 }
 
-// TestConfig_Validate_Signing tests are written before the implementation (TDD)
-// and are expected to fail until validateSigning() is fully implemented.
+// TestConfig_Validate_Signing verifies that signing-related configuration is validated correctly.
 func TestConfig_Validate_Signing(t *testing.T) {
 	validServer := &OpAMPServer{
 		WS: &commonFields{Endpoint: "wss://127.0.0.1:4320/v1/opamp"},
@@ -474,8 +473,7 @@ func TestConfig_Validate_Signing(t *testing.T) {
 	})
 }
 
-// TestCapabilities_toAgentCapabilities_Signing tests the VerifiesRemoteConfigSignature bit.
-// Written before the implementation (TDD) — expected to fail until the bit is added.
+// TestCapabilities_toAgentCapabilities_Signing verifies the VerifiesRemoteConfigSignature capability bit.
 func TestCapabilities_toAgentCapabilities_Signing(t *testing.T) {
 	t.Run("VerifiesRemoteConfigSignature bit set when enabled", func(t *testing.T) {
 		caps := Capabilities{VerifiesRemoteConfigSignature: true}

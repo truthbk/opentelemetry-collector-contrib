@@ -1012,9 +1012,6 @@ func newTestOpampAgent(cfg *Config, set extension.Settings, mockOpampClient *moc
 	return o
 }
 
-// TestBuildSignatureVerifier_* tests are written before the implementation (TDD).
-// They are expected to fail until buildSignatureVerifier() is fully implemented.
-
 func TestExtension_BuildSignatureVerifier_NoCACertFile(t *testing.T) {
 	o := &opampAgent{cfg: &Config{}}
 	verifier, err := o.buildSignatureVerifier()

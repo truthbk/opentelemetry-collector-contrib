@@ -559,9 +559,7 @@ func TestValidate(t *testing.T) {
 	}
 }
 
-// TestValidate_Signing verifies that signing-related configuration is validated
-// correctly. These tests are written before the implementation (TDD) and are
-// expected to fail until validateSigning() is fully implemented.
+// TestValidate_Signing verifies that signing-related configuration is validated correctly.
 func TestValidate_Signing(t *testing.T) {
 	tlsConfig := configtls.NewDefaultClientConfig()
 	tlsConfig.InsecureSkipVerify = true
