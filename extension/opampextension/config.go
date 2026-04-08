@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"runtime"
 	"time"
 
@@ -101,6 +102,10 @@ func (caps Capabilities) toAgentCapabilities() protobufs.AgentCapabilities {
 	}
 	if caps.AcceptsRestartCommand {
 		agentCapabilities |= protobufs.AgentCapabilities_AgentCapabilities_AcceptsRestartCommand
+	}
+
+	if caps.VerifiesRemoteConfigSignature {
+		agentCapabilities |= protobufs.AgentCapabilities_AgentCapabilities_VerifiesRemoteConfigSignature
 	}
 
 	return agentCapabilities
@@ -257,8 +262,16 @@ func (cfg *Config) Validate() error {
 	return nil
 }
 
-// validateSigning checks that the signing configuration is consistent.
-// It is a stub that will be implemented in a subsequent commit.
+// validateSigning checks that the signing configuration is consistent:
+// the capability requires a CA cert file, and if a file is specified it must exist.
 func (cfg *Config) validateSigning() error {
+	if cfg.Capabilities.VerifiesRemoteConfigSignature && cfg.Signing.CACertFile == "" {
+		return errors.New("capabilities::verifies_remote_config_signature requires signing::ca_cert_file to be set")
+	}
+	if cfg.Signing.CACertFile != "" {
+		if _, err := os.Stat(cfg.Signing.CACertFile); err != nil {
+			return fmt.Errorf("signing::ca_cert_file: %w", err)
+		}
+	}
 	return nil
 }

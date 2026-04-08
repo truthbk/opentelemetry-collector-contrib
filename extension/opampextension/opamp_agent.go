@@ -6,6 +6,7 @@ package opampextension // import "github.com/open-telemetry/opentelemetry-collec
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"maps"
@@ -178,6 +179,12 @@ func (o *opampAgent) Start(ctx context.Context, host component.Host) error {
 	if err := o.opampClient.SetCapabilities(&capabilities); err != nil {
 		return err
 	}
+
+	verifier, err := o.buildSignatureVerifier()
+	if err != nil {
+		return fmt.Errorf("cannot build signature verifier: %w", err)
+	}
+	settings.SignatureVerifier = verifier
 
 	o.logger.Debug("Starting OpAMP client...")
 
@@ -713,7 +720,17 @@ func convertComponentHealth(statusUpdate *status.AggregateStatus) *protobufs.Com
 
 // buildSignatureVerifier constructs an X509SignatureVerifier from the configured
 // CA certificate file, or returns nil if no signing is configured.
-// This is a stub; the implementation will be added in a subsequent commit.
 func (o *opampAgent) buildSignatureVerifier() (signing.SignatureVerifier, error) {
-	return nil, nil
+	if o.cfg.Signing.CACertFile == "" {
+		return nil, nil
+	}
+	pemBytes, err := os.ReadFile(o.cfg.Signing.CACertFile)
+	if err != nil {
+		return nil, fmt.Errorf("signing: cannot read ca_cert_file %q: %w", o.cfg.Signing.CACertFile, err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pemBytes) {
+		return nil, fmt.Errorf("signing: ca_cert_file %q contains no valid PEM certificates", o.cfg.Signing.CACertFile)
+	}
+	return signing.NewX509SignatureVerifier(pool), nil
 }
