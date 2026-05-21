@@ -35,6 +35,7 @@ import (
 	"github.com/open-telemetry/opamp-go/protobufs"
 	"github.com/open-telemetry/opamp-go/server"
 	serverTypes "github.com/open-telemetry/opamp-go/server/types"
+	"github.com/open-telemetry/opamp-go/signing"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configopaque"
 	"go.opentelemetry.io/collector/config/configtelemetry"
@@ -645,6 +646,11 @@ func (s *Supervisor) startOpAMPClient() error {
 		return fmt.Errorf("unsupported scheme in server endpoint: %q", parsedURL.Scheme)
 	}
 
+	payloadVerifier, err := s.buildPayloadVerifier()
+	if err != nil {
+		return fmt.Errorf("build payload trust verifier: %w", err)
+	}
+
 	s.telemetrySettings.Logger.Debug("Connecting to OpAMP server...", zap.String("endpoint", s.config.Server.Endpoint), zap.Any("headers", s.config.Server.OpaqueHeaders()))
 	settings := types.StartSettings{
 		OpAMPServerURL:     s.config.Server.Endpoint,
@@ -652,6 +658,7 @@ func (s *Supervisor) startOpAMPClient() error {
 		TLSConfig:          tlsConfig,
 		InstanceUid:        types.InstanceUid(s.persistentState.InstanceID),
 		RemoteConfigStatus: s.persistentState.GetLastRemoteConfigStatus(),
+		PayloadVerifier:    payloadVerifier,
 		Callbacks: types.Callbacks{
 			OnConnect: func(context.Context) {
 				s.telemetrySettings.Logger.Info("Connected to the server.")
@@ -716,6 +723,23 @@ func (s *Supervisor) startOpAMPClient() error {
 	s.telemetrySettings.Logger.Debug("OpAMP client started.")
 
 	return nil
+}
+
+// buildPayloadVerifier returns a signing.Verifier when the supervisor
+// is configured for OpAMP Message Attestation (the
+// RequiresPayloadTrustVerification capability is set and Signing
+// supplies a CA bundle). It returns (nil, nil) when attestation is
+// not enabled — the OpAMP client's PayloadVerifier field is then left
+// nil and the wire format stays byte-identical to upstream OpAMP.
+func (s *Supervisor) buildPayloadVerifier() (signing.Verifier, error) {
+	if !s.config.Capabilities.RequiresPayloadTrustVerification {
+		return nil, nil
+	}
+	verifier, err := signing.VerifierFromFile(s.config.Signing.CACertFile)
+	if err != nil {
+		return nil, fmt.Errorf("load payload trust anchors from %q: %w", s.config.Signing.CACertFile, err)
+	}
+	return verifier, nil
 }
 
 func (s *Supervisor) startHealthCheckServer() error {

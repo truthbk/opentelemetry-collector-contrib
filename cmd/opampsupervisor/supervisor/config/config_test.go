@@ -546,6 +546,89 @@ func TestValidate(t *testing.T) {
 			},
 			expectedErrorFunc: simpleError("healthcheck::endpoint must contain a valid port number, got -1"),
 		},
+		{
+			name: "Requires payload trust verification but no CA cert",
+			config: Supervisor{
+				Server: OpAMPServer{
+					Endpoint: "wss://localhost:9090/opamp",
+					TLS:      tlsConfig,
+				},
+				Agent: Agent{
+					Executable:              "${file_path}",
+					ConfigApplyTimeout:      2 * time.Second,
+					OrphanDetectionInterval: 5 * time.Second,
+					BootstrapTimeout:        5 * time.Second,
+				},
+				Capabilities: Capabilities{
+					RequiresPayloadTrustVerification: true,
+				},
+				Storage:     Storage{Directory: "/etc/opamp-supervisor/storage"},
+				HealthCheck: defaultHealthCheck,
+			},
+			expectedErrorFunc: simpleError("capabilities::requires_payload_trust_verification requires signing::ca_cert_file"),
+		},
+		{
+			name: "Signing CA cert set but capability not declared",
+			config: Supervisor{
+				Server: OpAMPServer{
+					Endpoint: "wss://localhost:9090/opamp",
+					TLS:      tlsConfig,
+				},
+				Agent: Agent{
+					Executable:              "${file_path}",
+					ConfigApplyTimeout:      2 * time.Second,
+					OrphanDetectionInterval: 5 * time.Second,
+					BootstrapTimeout:        5 * time.Second,
+				},
+				Signing:     Signing{CACertFile: "${file_path}"},
+				Storage:     Storage{Directory: "/etc/opamp-supervisor/storage"},
+				HealthCheck: defaultHealthCheck,
+			},
+			expectedErrorFunc: simpleError("signing::ca_cert_file is set but capabilities::requires_payload_trust_verification is false"),
+		},
+		{
+			name: "Signing CA cert points at a non-existent file",
+			config: Supervisor{
+				Server: OpAMPServer{
+					Endpoint: "wss://localhost:9090/opamp",
+					TLS:      tlsConfig,
+				},
+				Agent: Agent{
+					Executable:              "${file_path}",
+					ConfigApplyTimeout:      2 * time.Second,
+					OrphanDetectionInterval: 5 * time.Second,
+					BootstrapTimeout:        5 * time.Second,
+				},
+				Capabilities: Capabilities{
+					RequiresPayloadTrustVerification: true,
+				},
+				Signing:     Signing{CACertFile: "/this/path/definitely/does/not/exist/ca.pem"},
+				Storage:     Storage{Directory: "/etc/opamp-supervisor/storage"},
+				HealthCheck: defaultHealthCheck,
+			},
+			expectedErrorFunc: simpleError(`could not stat signing::ca_cert_file "/this/path/definitely/does/not/exist/ca.pem":`),
+		},
+		{
+			name: "Valid payload trust verification config",
+			config: Supervisor{
+				Server: OpAMPServer{
+					Endpoint: "wss://localhost:9090/opamp",
+					TLS:      tlsConfig,
+				},
+				Agent: Agent{
+					Executable:              "${file_path}",
+					ConfigApplyTimeout:      2 * time.Second,
+					OrphanDetectionInterval: 5 * time.Second,
+					BootstrapTimeout:        5 * time.Second,
+				},
+				Capabilities: Capabilities{
+					RequiresPayloadTrustVerification: true,
+				},
+				Signing:     Signing{CACertFile: "${file_path}"},
+				Storage:     Storage{Directory: "/etc/opamp-supervisor/storage"},
+				HealthCheck: defaultHealthCheck,
+			},
+		},
 	}
 
 	// create some fake files for validating agent config
@@ -554,16 +637,20 @@ func TestValidate(t *testing.T) {
 	filePath := filepath.Join(tmpDir, "file")
 	require.NoError(t, os.WriteFile(filePath, []byte{}, 0o600))
 
+	expandFilePath := func(s string) string {
+		if s == "file_path" {
+			return filePath
+		}
+		return ""
+	}
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Fill in path to agent executable
-			tc.config.Agent.Executable = os.Expand(tc.config.Agent.Executable,
-				func(s string) string {
-					if s == "file_path" {
-						return filePath
-					}
-					return ""
-				})
+			tc.config.Agent.Executable = os.Expand(tc.config.Agent.Executable, expandFilePath)
+			// Same substitution for the signing CA cert path so tests
+			// can name the temp file with ${file_path}.
+			tc.config.Signing.CACertFile = os.Expand(tc.config.Signing.CACertFile, expandFilePath)
 
 			err := confmap.Validate(tc.config)
 
@@ -705,21 +792,30 @@ func TestCapabilities_SupportedCapabilities(t *testing.T) {
 				protobufs.AgentCapabilities_AgentCapabilities_ReportsPackageStatuses,
 		},
 		{
+			name: "Requires payload trust verification",
+			capabilities: Capabilities{
+				RequiresPayloadTrustVerification: true,
+			},
+			expectedAgentCapabilities: protobufs.AgentCapabilities_AgentCapabilities_ReportsStatus |
+				protobufs.AgentCapabilities_AgentCapabilities_RequiresPayloadTrustVerification,
+		},
+		{
 			name: "Many capabilities",
 			capabilities: Capabilities{
-				AcceptsRemoteConfig:            true,
-				AcceptsRestartCommand:          true,
-				AcceptsOpAMPConnectionSettings: true,
-				ReportsEffectiveConfig:         true,
-				ReportsOwnMetrics:              true,
-				ReportsOwnLogs:                 true,
-				ReportsOwnTraces:               true,
-				ReportsHealth:                  true,
-				ReportsRemoteConfig:            true,
-				ReportsAvailableComponents:     true,
-				ReportsHeartbeat:               true,
-				AcceptsPackages:                true,
-				ReportsPackageStatuses:         true,
+				AcceptsRemoteConfig:              true,
+				AcceptsRestartCommand:            true,
+				AcceptsOpAMPConnectionSettings:   true,
+				ReportsEffectiveConfig:           true,
+				ReportsOwnMetrics:                true,
+				ReportsOwnLogs:                   true,
+				ReportsOwnTraces:                 true,
+				ReportsHealth:                    true,
+				ReportsRemoteConfig:              true,
+				ReportsAvailableComponents:       true,
+				ReportsHeartbeat:                 true,
+				AcceptsPackages:                  true,
+				ReportsPackageStatuses:           true,
+				RequiresPayloadTrustVerification: true,
 			},
 			expectedAgentCapabilities: protobufs.AgentCapabilities_AgentCapabilities_ReportsStatus |
 				protobufs.AgentCapabilities_AgentCapabilities_ReportsEffectiveConfig |
@@ -734,7 +830,8 @@ func TestCapabilities_SupportedCapabilities(t *testing.T) {
 				protobufs.AgentCapabilities_AgentCapabilities_ReportsAvailableComponents |
 				protobufs.AgentCapabilities_AgentCapabilities_ReportsHeartbeat |
 				protobufs.AgentCapabilities_AgentCapabilities_AcceptsPackages |
-				protobufs.AgentCapabilities_AgentCapabilities_ReportsPackageStatuses,
+				protobufs.AgentCapabilities_AgentCapabilities_ReportsPackageStatuses |
+				protobufs.AgentCapabilities_AgentCapabilities_RequiresPayloadTrustVerification,
 		},
 	}
 

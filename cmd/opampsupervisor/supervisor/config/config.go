@@ -46,6 +46,7 @@ type Supervisor struct {
 	Telemetry    Telemetry         `mapstructure:"telemetry"`
 	HealthCheck  HealthCheck       `mapstructure:"healthcheck"`
 	Extensions   extensions.Config `mapstructure:"extensions,omitempty"`
+	Signing      Signing           `mapstructure:"signing,omitempty"`
 }
 
 // Load loads the Supervisor config from a file.
@@ -82,8 +83,44 @@ func Load(configFile string) (Supervisor, error) {
 	return cfg, nil
 }
 
-func (Supervisor) Validate() error {
+func (s Supervisor) Validate() error {
+	// Cross-field check: the RequiresPayloadTrustVerification
+	// capability is meaningless without a CA file to validate the
+	// server's signing chain against; conversely, supplying a CA file
+	// without the capability would silently allow the supervisor to
+	// connect to a non-signing server (the spec requires the agent to
+	// drop in that case, but only if the capability is declared). Fail
+	// fast at config-load time.
+	requires := s.Capabilities.RequiresPayloadTrustVerification
+	caFile := s.Signing.CACertFile
+	switch {
+	case requires && caFile == "":
+		return errors.New("capabilities::requires_payload_trust_verification requires signing::ca_cert_file")
+	case !requires && caFile != "":
+		return errors.New("signing::ca_cert_file is set but capabilities::requires_payload_trust_verification is false")
+	}
+	if caFile != "" {
+		if _, err := os.Stat(caFile); err != nil {
+			return fmt.Errorf("could not stat signing::ca_cert_file %q: %w", caFile, err)
+		}
+	}
 	return nil
+}
+
+// Signing groups the operator-supplied PKI material the supervisor
+// needs to verify Message Attestation envelopes sent by the OpAMP
+// server. Required when
+// Capabilities.RequiresPayloadTrustVerification is true; ignored
+// otherwise.
+type Signing struct {
+	// CACertFile is the filesystem path to a PEM-encoded X.509 CA
+	// bundle. Every cert in the bundle becomes a trust anchor for
+	// chain validation on the first SignedServerToAgent envelope of
+	// each connection. Multiple anchors are allowed (for example to
+	// support a key-rotation overlap window).
+	CACertFile string `mapstructure:"ca_cert_file"`
+	// prevent unkeyed literal initialization
+	_ struct{}
 }
 
 type Storage struct {
@@ -95,19 +132,20 @@ type Storage struct {
 
 // Capabilities is the set of capabilities that the Supervisor supports.
 type Capabilities struct {
-	AcceptsRemoteConfig            bool `mapstructure:"accepts_remote_config"`
-	AcceptsRestartCommand          bool `mapstructure:"accepts_restart_command"`
-	AcceptsOpAMPConnectionSettings bool `mapstructure:"accepts_opamp_connection_settings"`
-	ReportsEffectiveConfig         bool `mapstructure:"reports_effective_config"`
-	ReportsOwnMetrics              bool `mapstructure:"reports_own_metrics"`
-	ReportsOwnLogs                 bool `mapstructure:"reports_own_logs"`
-	ReportsOwnTraces               bool `mapstructure:"reports_own_traces"`
-	ReportsHealth                  bool `mapstructure:"reports_health"`
-	ReportsRemoteConfig            bool `mapstructure:"reports_remote_config"`
-	ReportsAvailableComponents     bool `mapstructure:"reports_available_components"`
-	ReportsHeartbeat               bool `mapstructure:"reports_heartbeat"`
-	AcceptsPackages                bool `mapstructure:"accepts_packages"`
-	ReportsPackageStatuses         bool `mapstructure:"reports_package_statuses"`
+	AcceptsRemoteConfig              bool `mapstructure:"accepts_remote_config"`
+	AcceptsRestartCommand            bool `mapstructure:"accepts_restart_command"`
+	AcceptsOpAMPConnectionSettings   bool `mapstructure:"accepts_opamp_connection_settings"`
+	ReportsEffectiveConfig           bool `mapstructure:"reports_effective_config"`
+	ReportsOwnMetrics                bool `mapstructure:"reports_own_metrics"`
+	ReportsOwnLogs                   bool `mapstructure:"reports_own_logs"`
+	ReportsOwnTraces                 bool `mapstructure:"reports_own_traces"`
+	ReportsHealth                    bool `mapstructure:"reports_health"`
+	ReportsRemoteConfig              bool `mapstructure:"reports_remote_config"`
+	ReportsAvailableComponents       bool `mapstructure:"reports_available_components"`
+	ReportsHeartbeat                 bool `mapstructure:"reports_heartbeat"`
+	AcceptsPackages                  bool `mapstructure:"accepts_packages"`
+	ReportsPackageStatuses           bool `mapstructure:"reports_package_statuses"`
+	RequiresPayloadTrustVerification bool `mapstructure:"requires_payload_trust_verification"`
 }
 
 func (c Capabilities) SupportedCapabilities() protobufs.AgentCapabilities {
@@ -164,6 +202,10 @@ func (c Capabilities) SupportedCapabilities() protobufs.AgentCapabilities {
 	}
 	if c.ReportsPackageStatuses {
 		supportedCapabilities |= protobufs.AgentCapabilities_AgentCapabilities_ReportsPackageStatuses
+	}
+
+	if c.RequiresPayloadTrustVerification {
+		supportedCapabilities |= protobufs.AgentCapabilities_AgentCapabilities_RequiresPayloadTrustVerification
 	}
 
 	return supportedCapabilities
