@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/open-telemetry/opamp-go/protobufs"
+	"github.com/open-telemetry/opamp-go/signing"
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/config/confignet"
 	"go.opentelemetry.io/collector/config/configopaque"
@@ -46,7 +47,7 @@ type Supervisor struct {
 	Telemetry    Telemetry         `mapstructure:"telemetry"`
 	HealthCheck  HealthCheck       `mapstructure:"healthcheck"`
 	Extensions   extensions.Config `mapstructure:"extensions,omitempty"`
-	Signing      Signing           `mapstructure:"signing,omitempty"`
+	Signing      Signing           `mapstructure:"signing"`
 }
 
 // Load loads the Supervisor config from a file.
@@ -83,14 +84,12 @@ func Load(configFile string) (Supervisor, error) {
 	return cfg, nil
 }
 
+// Validate enforces the cross-field invariant between the
+// RequiresPayloadTrustVerification capability and the signing CA
+// file: both must be present or both absent. Per-field validity
+// (e.g. the CA file is a parseable PEM bundle) is owned by
+// Signing.Validate, which confmap runs as part of the same walk.
 func (s Supervisor) Validate() error {
-	// Cross-field check: the RequiresPayloadTrustVerification
-	// capability is meaningless without a CA file to validate the
-	// server's signing chain against; conversely, supplying a CA file
-	// without the capability would silently allow the supervisor to
-	// connect to a non-signing server (the spec requires the agent to
-	// drop in that case, but only if the capability is declared). Fail
-	// fast at config-load time.
 	requires := s.Capabilities.RequiresPayloadTrustVerification
 	caFile := s.Signing.CACertFile
 	switch {
@@ -98,11 +97,6 @@ func (s Supervisor) Validate() error {
 		return errors.New("capabilities::requires_payload_trust_verification requires signing::ca_cert_file")
 	case !requires && caFile != "":
 		return errors.New("signing::ca_cert_file is set but capabilities::requires_payload_trust_verification is false")
-	}
-	if caFile != "" {
-		if _, err := os.Stat(caFile); err != nil {
-			return fmt.Errorf("could not stat signing::ca_cert_file %q: %w", caFile, err)
-		}
 	}
 	return nil
 }
@@ -121,6 +115,22 @@ type Signing struct {
 	CACertFile string `mapstructure:"ca_cert_file"`
 	// prevent unkeyed literal initialization
 	_ struct{}
+}
+
+// Validate parses the configured CA bundle so that misconfiguration
+// (missing file, unreadable file, file containing no CERTIFICATE PEM
+// blocks, file pointing at a directory) fails at supervisor startup
+// rather than later when the OpAMP client first connects. An empty
+// CACertFile is the disabled state and is accepted; the cross-field
+// invariant with the capability bit is enforced by Supervisor.Validate.
+func (s Signing) Validate() error {
+	if s.CACertFile == "" {
+		return nil
+	}
+	if _, err := signing.VerifierFromFile(s.CACertFile); err != nil {
+		return fmt.Errorf("invalid signing::ca_cert_file %q: %w", s.CACertFile, err)
+	}
+	return nil
 }
 
 type Storage struct {
@@ -414,19 +424,20 @@ func DefaultSupervisor() Supervisor {
 
 	return Supervisor{
 		Capabilities: Capabilities{
-			AcceptsRemoteConfig:            false,
-			AcceptsRestartCommand:          false,
-			AcceptsOpAMPConnectionSettings: false,
-			ReportsEffectiveConfig:         true,
-			ReportsOwnMetrics:              true,
-			ReportsOwnLogs:                 false,
-			ReportsOwnTraces:               false,
-			ReportsHealth:                  true,
-			ReportsRemoteConfig:            false,
-			ReportsAvailableComponents:     false,
-			ReportsHeartbeat:               true,
-			AcceptsPackages:                false,
-			ReportsPackageStatuses:         false,
+			AcceptsRemoteConfig:              false,
+			AcceptsRestartCommand:            false,
+			AcceptsOpAMPConnectionSettings:   false,
+			ReportsEffectiveConfig:           true,
+			ReportsOwnMetrics:                true,
+			ReportsOwnLogs:                   false,
+			ReportsOwnTraces:                 false,
+			ReportsHealth:                    true,
+			ReportsRemoteConfig:              false,
+			ReportsAvailableComponents:       false,
+			ReportsHeartbeat:                 true,
+			AcceptsPackages:                  false,
+			ReportsPackageStatuses:           false,
+			RequiresPayloadTrustVerification: false,
 		},
 		Storage: Storage{
 			Directory: defaultStorageDir,

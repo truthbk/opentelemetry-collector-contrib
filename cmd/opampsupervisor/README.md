@@ -146,22 +146,43 @@ For a list of open issues related to the Supervisor, see [these issues](https://
 
 ### OpAMP capabilities
 
-| OpAMP capability               | Status                                                                           |
-|--------------------------------|----------------------------------------------------------------------------------|
-| AcceptsRemoteConfig            | ✅                                                                               |
-| ReportsEffectiveConfig         | ✅                                                                               |
-| AcceptsPackages                | <https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/34734> |
-| ReportsPackageStatuses         | <https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/38727> |
-| ReportsOwnTraces               | ✅                                                                               |
-| ReportsOwnMetrics              | ✅                                                                               |
-| ReportsOwnLogs                 | ✅                                                                               |
-| AcceptsOpAMPConnectionSettings | ✅                                                                               |
-| AcceptsOtherConnectionSettings | ✅                                                                               |
-| AcceptsRestartCommand          | ✅                                                                               |
-| ReportsHealth                  | ⚠️                                                                               |
-| ReportsStatus                  | <https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/38729> |
-| ReportsRemoteConfig            | ✅                                                                               |
-| ReportsAvailableComponents     | ✅                                                                               |
+| OpAMP capability                 | Status                                                                           |
+|----------------------------------|----------------------------------------------------------------------------------|
+| AcceptsRemoteConfig              | ✅                                                                               |
+| ReportsEffectiveConfig           | ✅                                                                               |
+| AcceptsPackages                  | <https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/34734> |
+| ReportsPackageStatuses           | <https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/38727> |
+| ReportsOwnTraces                 | ✅                                                                               |
+| ReportsOwnMetrics                | ✅                                                                               |
+| ReportsOwnLogs                   | ✅                                                                               |
+| AcceptsOpAMPConnectionSettings   | ✅                                                                               |
+| AcceptsOtherConnectionSettings   | ✅                                                                               |
+| AcceptsRestartCommand            | ✅                                                                               |
+| ReportsHealth                    | ⚠️                                                                               |
+| ReportsStatus                    | <https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/38729> |
+| ReportsRemoteConfig              | ✅                                                                               |
+| ReportsAvailableComponents       | ✅                                                                               |
+| RequiresPayloadTrustVerification | ✅                                                                               |
+
+#### Payload trust verification (X.509 Message Attestation)
+
+When the OpAMP server signs the messages it sends to the supervisor
+(per the OpAMP spec's Message Attestation section), the supervisor can
+verify those signatures against an operator-supplied CA bundle. Two
+config keys are required and must be set together:
+
+- `capabilities.requires_payload_trust_verification: true` — advertises
+  the `RequiresPayloadTrustVerification` capability bit so the server
+  knows to wrap responses in a `SignedServerToAgent` envelope.
+- `signing.ca_cert_file: /path/to/ca.pem` — the PEM-encoded X.509 trust
+  anchor bundle. Multiple CERTIFICATE blocks are supported (for
+  example to cover a key-rotation overlap).
+
+The supervisor's `Validate()` rejects mismatched configurations
+(capability without CA file, CA file without capability, missing or
+unparseable CA file) at startup so misconfiguration cannot reach the
+wire. When both keys are absent the wire format is byte-identical to
+upstream OpAMP.
 
 ### Supervisor specification features
 

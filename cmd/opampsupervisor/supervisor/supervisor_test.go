@@ -6,6 +6,7 @@ package supervisor
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -29,6 +30,7 @@ import (
 	"github.com/open-telemetry/opamp-go/client/types"
 	"github.com/open-telemetry/opamp-go/protobufs"
 	serverTypes "github.com/open-telemetry/opamp-go/server/types"
+	"github.com/open-telemetry/opamp-go/signing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
@@ -2301,4 +2303,64 @@ func TestRemoteConfigConcurrentAccess(t *testing.T) {
 
 	close(startSignal)
 	wg.Wait()
+}
+
+func TestSupervisor_buildPayloadVerifier(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Generate a real CA PEM bundle for the "valid" case.
+	caPath := filepath.Join(tmpDir, "ca.pem")
+	caCert, _, err := signing.GenerateCA(signing.AlgorithmECDSAP256SHA256, signing.CertOptions{})
+	require.NoError(t, err)
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caCert.Raw})
+	require.NoError(t, os.WriteFile(caPath, caPEM, 0o600))
+
+	tests := []struct {
+		name       string
+		config     config.Supervisor
+		wantNil    bool
+		wantErrSub string
+	}{
+		{
+			name: "attestation disabled returns (nil, nil)",
+			config: config.Supervisor{
+				Capabilities: config.Capabilities{RequiresPayloadTrustVerification: false},
+				Signing:      config.Signing{CACertFile: ""},
+			},
+			wantNil: true,
+		},
+		{
+			name: "valid CA bundle returns a verifier",
+			config: config.Supervisor{
+				Capabilities: config.Capabilities{RequiresPayloadTrustVerification: true},
+				Signing:      config.Signing{CACertFile: caPath},
+			},
+		},
+		{
+			name: "non-existent CA file returns an error",
+			config: config.Supervisor{
+				Capabilities: config.Capabilities{RequiresPayloadTrustVerification: true},
+				Signing:      config.Signing{CACertFile: filepath.Join(tmpDir, "does-not-exist.pem")},
+			},
+			wantErrSub: "load payload trust anchors from",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Supervisor{config: tc.config}
+			verifier, err := s.buildPayloadVerifier()
+			if tc.wantErrSub != "" {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tc.wantErrSub)
+				return
+			}
+			require.NoError(t, err)
+			if tc.wantNil {
+				require.Nil(t, verifier, "verifier must be nil when attestation is disabled")
+			} else {
+				require.NotNil(t, verifier)
+			}
+		})
+	}
 }

@@ -4,6 +4,7 @@
 package config
 
 import (
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/open-telemetry/opamp-go/protobufs"
+	"github.com/open-telemetry/opamp-go/signing"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/confighttp"
@@ -24,6 +26,17 @@ import (
 	"go.opentelemetry.io/collector/extension/extensiontest"
 	"go.uber.org/zap/zapcore"
 )
+
+// writeTestCABundle generates an ephemeral CA and writes its
+// certificate as a PEM file at path. Used by tests that need a
+// Validate-acceptable CA bundle on disk.
+func writeTestCABundle(t *testing.T, path string) {
+	t.Helper()
+	ca, _, err := signing.GenerateCA(signing.AlgorithmECDSAP256SHA256, signing.CertOptions{})
+	require.NoError(t, err)
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Raw})
+	require.NoError(t, os.WriteFile(path, pemBytes, 0o600))
+}
 
 func simpleError(err string) func() string {
 	return func() string {
@@ -580,7 +593,7 @@ func TestValidate(t *testing.T) {
 					OrphanDetectionInterval: 5 * time.Second,
 					BootstrapTimeout:        5 * time.Second,
 				},
-				Signing:     Signing{CACertFile: "${file_path}"},
+				Signing:     Signing{CACertFile: "${ca_path}"},
 				Storage:     Storage{Directory: "/etc/opamp-supervisor/storage"},
 				HealthCheck: defaultHealthCheck,
 			},
@@ -606,7 +619,30 @@ func TestValidate(t *testing.T) {
 				Storage:     Storage{Directory: "/etc/opamp-supervisor/storage"},
 				HealthCheck: defaultHealthCheck,
 			},
-			expectedErrorFunc: simpleError(`could not stat signing::ca_cert_file "/this/path/definitely/does/not/exist/ca.pem":`),
+			expectedErrorFunc: simpleError(`invalid signing::ca_cert_file "/this/path/definitely/does/not/exist/ca.pem":`),
+		},
+		{
+			name: "Signing CA cert points at an empty file",
+			config: Supervisor{
+				Server: OpAMPServer{
+					Endpoint: "wss://localhost:9090/opamp",
+					TLS:      tlsConfig,
+				},
+				Agent: Agent{
+					Executable:              "${file_path}",
+					ConfigApplyTimeout:      2 * time.Second,
+					OrphanDetectionInterval: 5 * time.Second,
+					BootstrapTimeout:        5 * time.Second,
+				},
+				Capabilities: Capabilities{
+					RequiresPayloadTrustVerification: true,
+				},
+				// ${file_path} resolves to an empty file — not a valid PEM bundle.
+				Signing:     Signing{CACertFile: "${file_path}"},
+				Storage:     Storage{Directory: "/etc/opamp-supervisor/storage"},
+				HealthCheck: defaultHealthCheck,
+			},
+			expectedErrorFunc: simpleError("no valid PEM certificates"),
 		},
 		{
 			name: "Valid payload trust verification config",
@@ -624,7 +660,7 @@ func TestValidate(t *testing.T) {
 				Capabilities: Capabilities{
 					RequiresPayloadTrustVerification: true,
 				},
-				Signing:     Signing{CACertFile: "${file_path}"},
+				Signing:     Signing{CACertFile: "${ca_path}"},
 				Storage:     Storage{Directory: "/etc/opamp-supervisor/storage"},
 				HealthCheck: defaultHealthCheck,
 			},
@@ -637,9 +673,16 @@ func TestValidate(t *testing.T) {
 	filePath := filepath.Join(tmpDir, "file")
 	require.NoError(t, os.WriteFile(filePath, []byte{}, 0o600))
 
+	// A real PEM CA bundle for Validate-acceptable signing config tests.
+	caPath := filepath.Join(tmpDir, "ca.pem")
+	writeTestCABundle(t, caPath)
+
 	expandFilePath := func(s string) string {
-		if s == "file_path" {
+		switch s {
+		case "file_path":
 			return filePath
+		case "ca_path":
+			return caPath
 		}
 		return ""
 	}
@@ -1019,6 +1062,36 @@ agent:
 
 				cfgPath := setupSupervisorConfigFile(t, tmpDir, config)
 				runSupervisorConfigLoadTest(t, cfgPath, expected, nil)
+			},
+		},
+		{
+			desc: "Signing Block Round-Trip",
+			testFunc: func(t *testing.T) {
+				caPath := filepath.Join(tmpDir, "ca-load.pem")
+				writeTestCABundle(t, caPath)
+
+				config := `
+server:
+  endpoint: ws://localhost/v1/opamp
+
+agent:
+  executable: %s
+
+capabilities:
+  requires_payload_trust_verification: true
+
+signing:
+  ca_cert_file: %s
+`
+				config = fmt.Sprintf(config, executablePath, caPath)
+
+				cfgPath := setupSupervisorConfigFile(t, tmpDir, config)
+				cfg, err := Load(cfgPath)
+				require.NoError(t, err)
+				require.True(t, cfg.Capabilities.RequiresPayloadTrustVerification,
+					"the requires_payload_trust_verification mapstructure tag should decode")
+				require.Equal(t, caPath, cfg.Signing.CACertFile,
+					"the signing.ca_cert_file mapstructure tag should decode")
 			},
 		},
 		{
