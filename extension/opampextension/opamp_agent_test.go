@@ -5,6 +5,7 @@ package opampextension
 
 import (
 	"context"
+	"encoding/pem"
 	"errors"
 	"os"
 	"os/signal"
@@ -18,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/open-telemetry/opamp-go/client/types"
 	"github.com/open-telemetry/opamp-go/protobufs"
+	"github.com/open-telemetry/opamp-go/signing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
@@ -1013,4 +1015,63 @@ func newTestOpampAgent(cfg *Config, set extension.Settings, mockOpampClient *moc
 
 	o.lifetimeCtx, o.lifetimeCtxCancel = context.WithCancel(context.Background())
 	return o
+}
+
+func TestOpampAgent_buildPayloadVerifier(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	caPath := filepath.Join(tmpDir, "ca.pem")
+	caCert, _, err := signing.GenerateCA(signing.AlgorithmECDSAP256SHA256, signing.CertOptions{})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(caPath,
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caCert.Raw}),
+		0o600))
+
+	tests := []struct {
+		name       string
+		cfg        Config
+		wantNil    bool
+		wantErrSub string
+	}{
+		{
+			name: "attestation disabled returns (nil, nil)",
+			cfg: Config{
+				Capabilities: Capabilities{RequiresPayloadTrustVerification: false},
+				Signing:      Signing{CACertFile: ""},
+			},
+			wantNil: true,
+		},
+		{
+			name: "valid CA bundle returns a verifier",
+			cfg: Config{
+				Capabilities: Capabilities{RequiresPayloadTrustVerification: true},
+				Signing:      Signing{CACertFile: caPath},
+			},
+		},
+		{
+			name: "non-existent CA file returns an error",
+			cfg: Config{
+				Capabilities: Capabilities{RequiresPayloadTrustVerification: true},
+				Signing:      Signing{CACertFile: filepath.Join(tmpDir, "does-not-exist.pem")},
+			},
+			wantErrSub: "load payload trust anchors from",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			o := &opampAgent{cfg: &tc.cfg}
+			verifier, err := o.buildPayloadVerifier()
+			if tc.wantErrSub != "" {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tc.wantErrSub)
+				return
+			}
+			require.NoError(t, err)
+			if tc.wantNil {
+				require.Nil(t, verifier, "verifier must be nil when attestation is disabled")
+			} else {
+				require.NotNil(t, verifier)
+			}
+		})
+	}
 }

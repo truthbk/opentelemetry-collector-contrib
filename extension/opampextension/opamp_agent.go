@@ -22,6 +22,7 @@ import (
 	"github.com/open-telemetry/opamp-go/client"
 	"github.com/open-telemetry/opamp-go/client/types"
 	"github.com/open-telemetry/opamp-go/protobufs"
+	"github.com/open-telemetry/opamp-go/signing"
 	"github.com/shirou/gopsutil/v4/host"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componentstatus"
@@ -129,12 +130,18 @@ func (o *opampAgent) Start(ctx context.Context, host component.Host) error {
 		return err
 	}
 
+	payloadVerifier, err := o.buildPayloadVerifier()
+	if err != nil {
+		return fmt.Errorf("build payload trust verifier: %w", err)
+	}
+
 	settings := types.StartSettings{
-		Header:         header,
-		HeaderFunc:     headerFunc,
-		TLSConfig:      tls,
-		OpAMPServerURL: o.cfg.Server.GetEndpoint(),
-		InstanceUid:    types.InstanceUid(o.instanceUID),
+		Header:          header,
+		HeaderFunc:      headerFunc,
+		TLSConfig:       tls,
+		OpAMPServerURL:  o.cfg.Server.GetEndpoint(),
+		InstanceUid:     types.InstanceUid(o.instanceUID),
+		PayloadVerifier: payloadVerifier,
 		Callbacks: types.Callbacks{
 			OnConnect: func(_ context.Context) {
 				o.logger.Debug("Connected to the OpAMP server")
@@ -188,6 +195,23 @@ func (o *opampAgent) Start(ctx context.Context, host component.Host) error {
 	o.logger.Debug("OpAMP client started")
 
 	return nil
+}
+
+// buildPayloadVerifier returns a signing.Verifier when the extension
+// is configured for OpAMP Message Attestation (the
+// RequiresPayloadTrustVerification capability is set and Signing
+// supplies a CA bundle). It returns (nil, nil) when attestation is
+// not enabled — the OpAMP client's PayloadVerifier field is then left
+// nil and the wire format stays byte-identical to upstream OpAMP.
+func (o *opampAgent) buildPayloadVerifier() (signing.Verifier, error) {
+	if !o.cfg.Capabilities.RequiresPayloadTrustVerification {
+		return nil, nil
+	}
+	verifier, err := signing.VerifierFromFile(o.cfg.Signing.CACertFile)
+	if err != nil {
+		return nil, fmt.Errorf("load payload trust anchors from %q: %w", o.cfg.Signing.CACertFile, err)
+	}
+	return verifier, nil
 }
 
 func (o *opampAgent) Shutdown(ctx context.Context) error {

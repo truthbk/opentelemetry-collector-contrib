@@ -14,6 +14,7 @@ import (
 
 	"github.com/open-telemetry/opamp-go/client"
 	"github.com/open-telemetry/opamp-go/protobufs"
+	"github.com/open-telemetry/opamp-go/signing"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configopaque"
 	"go.opentelemetry.io/collector/config/configtls"
@@ -49,6 +50,42 @@ type Config struct {
 
 	// PPIDPollInterval is the time between polling for whether PPID is running.
 	PPIDPollInterval time.Duration `mapstructure:"ppid_poll_interval"`
+
+	// Signing groups the operator-supplied PKI material the extension
+	// needs to verify Message Attestation envelopes sent by the OpAMP
+	// server. Required when
+	// Capabilities.RequiresPayloadTrustVerification is true; ignored
+	// otherwise.
+	Signing Signing `mapstructure:"signing"`
+}
+
+// Signing groups the operator-supplied PKI material for OpAMP
+// Message Attestation. Mirror of the supervisor's signing config.
+type Signing struct {
+	// CACertFile is the filesystem path to a PEM-encoded X.509 CA
+	// bundle. Every cert in the bundle becomes a trust anchor for
+	// chain validation on the first SignedServerToAgent envelope of
+	// each connection. Multiple anchors are allowed (for example to
+	// support a key-rotation overlap window).
+	CACertFile string `mapstructure:"ca_cert_file"`
+	// prevent unkeyed literal initialization
+	_ struct{}
+}
+
+// Validate parses the configured CA bundle so that misconfiguration
+// (missing file, unreadable file, file containing no CERTIFICATE PEM
+// blocks, file pointing at a directory) fails at extension startup
+// rather than later when the OpAMP client first connects. An empty
+// CACertFile is the disabled state; the cross-field invariant with
+// the capability bit is enforced by Config.Validate.
+func (s Signing) Validate() error {
+	if s.CACertFile == "" {
+		return nil
+	}
+	if _, err := signing.VerifierFromFile(s.CACertFile); err != nil {
+		return fmt.Errorf("invalid signing::ca_cert_file %q: %w", s.CACertFile, err)
+	}
+	return nil
 }
 
 type AgentDescription struct {
@@ -69,6 +106,14 @@ type Capabilities struct {
 	ReportsAvailableComponents bool `mapstructure:"reports_available_components"`
 	// AcceptsRestartCommand enables the OpAMP AcceptsRestartCommand Capability (default: false)
 	AcceptsRestartCommand bool `mapstructure:"accepts_restart_command"`
+	// RequiresPayloadTrustVerification enables the OpAMP
+	// RequiresPayloadTrustVerification Capability — server-to-agent
+	// messages are wrapped in a SignedServerToAgent envelope and the
+	// extension verifies the X.509 chain on the first message of each
+	// connection and the detached signature on every subsequent
+	// message. When set, Signing.CACertFile MUST also be set.
+	// (default: false)
+	RequiresPayloadTrustVerification bool `mapstructure:"requires_payload_trust_verification"`
 }
 
 func (caps Capabilities) toAgentCapabilities() protobufs.AgentCapabilities {
@@ -86,6 +131,9 @@ func (caps Capabilities) toAgentCapabilities() protobufs.AgentCapabilities {
 	}
 	if caps.AcceptsRestartCommand {
 		agentCapabilities |= protobufs.AgentCapabilities_AgentCapabilities_AcceptsRestartCommand
+	}
+	if caps.RequiresPayloadTrustVerification {
+		agentCapabilities |= protobufs.AgentCapabilities_AgentCapabilities_RequiresPayloadTrustVerification
 	}
 
 	return agentCapabilities
@@ -233,6 +281,18 @@ func (cfg *Config) Validate() error {
 		if err != nil {
 			return errors.New("opamp instance_uid is invalid")
 		}
+	}
+
+	// Cross-field check between Capabilities.RequiresPayloadTrustVerification
+	// and Signing.CACertFile. The per-field PEM-parse check lives on
+	// Signing.Validate() and is invoked by confmap's recursive walk.
+	requires := cfg.Capabilities.RequiresPayloadTrustVerification
+	caFile := cfg.Signing.CACertFile
+	switch {
+	case requires && caFile == "":
+		return errors.New("capabilities::requires_payload_trust_verification requires signing::ca_cert_file")
+	case !requires && caFile != "":
+		return errors.New("signing::ca_cert_file is set but capabilities::requires_payload_trust_verification is false")
 	}
 
 	return nil

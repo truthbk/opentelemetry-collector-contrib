@@ -4,11 +4,14 @@
 package opampextension
 
 import (
+	"encoding/pem"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/open-telemetry/opamp-go/protobufs"
+	"github.com/open-telemetry/opamp-go/signing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/config/configopaque"
@@ -213,10 +216,20 @@ func TestOpAMPServer_GetTLSConfig(t *testing.T) {
 }
 
 func TestConfig_Validate(t *testing.T) {
+	// Generate a real CA PEM bundle once for the payload-trust cases.
+	tmpDir := t.TempDir()
+	caPath := filepath.Join(tmpDir, "ca.pem")
+	caCert, _, err := signing.GenerateCA(signing.AlgorithmECDSAP256SHA256, signing.CertOptions{})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(caPath,
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caCert.Raw}),
+		0o600))
+
 	type fields struct {
 		Server       *OpAMPServer
 		InstanceUID  string
 		Capabilities Capabilities
+		Signing      Signing
 	}
 	tests := []struct {
 		name    string
@@ -358,6 +371,51 @@ func TestConfig_Validate(t *testing.T) {
 				return assert.Equal(t, "extension.opampextension.RemoteRestarts feature gate must be enabled to use the accepts_restart_command capability", err.Error())
 			},
 		},
+		{
+			name: "requires_payload_trust_verification without ca_cert_file",
+			fields: fields{
+				Server: &OpAMPServer{
+					WS: &commonFields{
+						Endpoint: "wss://127.0.0.1:4320/v1/opamp",
+					},
+				},
+				Capabilities: Capabilities{
+					RequiresPayloadTrustVerification: true,
+				},
+			},
+			wantErr: func(t assert.TestingT, err error, _ ...any) bool {
+				return assert.Equal(t, "capabilities::requires_payload_trust_verification requires signing::ca_cert_file", err.Error())
+			},
+		},
+		{
+			name: "ca_cert_file set without requires_payload_trust_verification",
+			fields: fields{
+				Server: &OpAMPServer{
+					WS: &commonFields{
+						Endpoint: "wss://127.0.0.1:4320/v1/opamp",
+					},
+				},
+				Signing: Signing{CACertFile: caPath},
+			},
+			wantErr: func(t assert.TestingT, err error, _ ...any) bool {
+				return assert.Equal(t, "signing::ca_cert_file is set but capabilities::requires_payload_trust_verification is false", err.Error())
+			},
+		},
+		{
+			name: "payload trust verification with valid CA bundle",
+			fields: fields{
+				Server: &OpAMPServer{
+					WS: &commonFields{
+						Endpoint: "wss://127.0.0.1:4320/v1/opamp",
+					},
+				},
+				Capabilities: Capabilities{
+					RequiresPayloadTrustVerification: true,
+				},
+				Signing: Signing{CACertFile: caPath},
+			},
+			wantErr: assert.NoError,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -365,17 +423,69 @@ func TestConfig_Validate(t *testing.T) {
 				Server:       tt.fields.Server,
 				InstanceUID:  tt.fields.InstanceUID,
 				Capabilities: tt.fields.Capabilities,
+				Signing:      tt.fields.Signing,
 			}
 			tt.wantErr(t, cfg.Validate())
 		})
 	}
 }
 
+func TestSigning_Validate(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	caPath := filepath.Join(tmpDir, "ca.pem")
+	caCert, _, err := signing.GenerateCA(signing.AlgorithmECDSAP256SHA256, signing.CertOptions{})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(caPath,
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caCert.Raw}),
+		0o600))
+
+	emptyPath := filepath.Join(tmpDir, "empty.pem")
+	require.NoError(t, os.WriteFile(emptyPath, []byte{}, 0o600))
+
+	tests := []struct {
+		name       string
+		signing    Signing
+		wantErrSub string
+	}{
+		{
+			name:    "empty path is the disabled state",
+			signing: Signing{},
+		},
+		{
+			name:    "valid CA bundle",
+			signing: Signing{CACertFile: caPath},
+		},
+		{
+			name:       "non-existent file",
+			signing:    Signing{CACertFile: filepath.Join(tmpDir, "missing.pem")},
+			wantErrSub: "invalid signing::ca_cert_file",
+		},
+		{
+			name:       "empty file is not a PEM bundle",
+			signing:    Signing{CACertFile: emptyPath},
+			wantErrSub: "no valid PEM certificates",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.signing.Validate()
+			if tt.wantErrSub != "" {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tt.wantErrSub)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestCapabilities_toAgentCapabilities(t *testing.T) {
 	type fields struct {
-		ReportsEffectiveConfig     bool
-		ReportsHealth              bool
-		ReportsAvailableComponents bool
+		ReportsEffectiveConfig           bool
+		ReportsHealth                    bool
+		ReportsAvailableComponents       bool
+		RequiresPayloadTrustVerification bool
 	}
 	tests := []struct {
 		name   string
@@ -400,13 +510,21 @@ func TestCapabilities_toAgentCapabilities(t *testing.T) {
 			},
 			want: protobufs.AgentCapabilities_AgentCapabilities_ReportsStatus | protobufs.AgentCapabilities_AgentCapabilities_ReportsEffectiveConfig | protobufs.AgentCapabilities_AgentCapabilities_ReportsHealth | protobufs.AgentCapabilities_AgentCapabilities_ReportsAvailableComponents,
 		},
+		{
+			name: "requires payload trust verification",
+			fields: fields{
+				RequiresPayloadTrustVerification: true,
+			},
+			want: protobufs.AgentCapabilities_AgentCapabilities_ReportsStatus | protobufs.AgentCapabilities_AgentCapabilities_RequiresPayloadTrustVerification,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			caps := Capabilities{
-				ReportsEffectiveConfig:     tt.fields.ReportsEffectiveConfig,
-				ReportsHealth:              tt.fields.ReportsHealth,
-				ReportsAvailableComponents: tt.fields.ReportsEffectiveConfig,
+				ReportsEffectiveConfig:           tt.fields.ReportsEffectiveConfig,
+				ReportsHealth:                    tt.fields.ReportsHealth,
+				ReportsAvailableComponents:       tt.fields.ReportsAvailableComponents,
+				RequiresPayloadTrustVerification: tt.fields.RequiresPayloadTrustVerification,
 			}
 			assert.Equalf(t, tt.want, caps.toAgentCapabilities(), "toAgentCapabilities()")
 		})
