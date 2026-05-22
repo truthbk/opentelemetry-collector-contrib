@@ -5,7 +5,6 @@ package opampextension
 
 import (
 	"context"
-	"encoding/pem"
 	"errors"
 	"os"
 	"os/signal"
@@ -19,7 +18,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/open-telemetry/opamp-go/client/types"
 	"github.com/open-telemetry/opamp-go/protobufs"
-	"github.com/open-telemetry/opamp-go/signing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
@@ -1021,11 +1019,7 @@ func TestOpampAgent_buildPayloadVerifier(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	caPath := filepath.Join(tmpDir, "ca.pem")
-	caCert, _, err := signing.GenerateCA(signing.AlgorithmECDSAP256SHA256, signing.CertOptions{})
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(caPath,
-		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caCert.Raw}),
-		0o600))
+	writeTestCABundle(t, caPath)
 
 	tests := []struct {
 		name       string
@@ -1038,6 +1032,14 @@ func TestOpampAgent_buildPayloadVerifier(t *testing.T) {
 			cfg: Config{
 				Capabilities: Capabilities{RequiresPayloadTrustVerification: false},
 				Signing:      Signing{CACertFile: ""},
+			},
+			wantNil: true,
+		},
+		{
+			name: "capability off + CA file set still returns (nil, nil)",
+			cfg: Config{
+				Capabilities: Capabilities{RequiresPayloadTrustVerification: false},
+				Signing:      Signing{CACertFile: caPath},
 			},
 			wantNil: true,
 		},

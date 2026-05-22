@@ -215,15 +215,24 @@ func TestOpAMPServer_GetTLSConfig(t *testing.T) {
 	}
 }
 
+// writeTestCABundle generates an ephemeral CA via signing.GenerateCA
+// and writes its certificate as a PEM bundle at path. Used by the
+// config + opamp_agent tests that need a Validate-acceptable CA file
+// on disk.
+func writeTestCABundle(t *testing.T, path string) {
+	t.Helper()
+	ca, _, err := signing.GenerateCA(signing.AlgorithmECDSAP256SHA256, signing.CertOptions{})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path,
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Raw}),
+		0o600))
+}
+
 func TestConfig_Validate(t *testing.T) {
 	// Generate a real CA PEM bundle once for the payload-trust cases.
 	tmpDir := t.TempDir()
 	caPath := filepath.Join(tmpDir, "ca.pem")
-	caCert, _, err := signing.GenerateCA(signing.AlgorithmECDSAP256SHA256, signing.CertOptions{})
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(caPath,
-		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caCert.Raw}),
-		0o600))
+	writeTestCABundle(t, caPath)
 
 	type fields struct {
 		Server       *OpAMPServer
@@ -416,6 +425,27 @@ func TestConfig_Validate(t *testing.T) {
 			},
 			wantErr: assert.NoError,
 		},
+		{
+			// HTTP transport mirror of the case above; the cross-field
+			// check sits ahead of the server switch but we still want
+			// to confirm the HTTP path doesn't otherwise reject the
+			// signing config.
+			name: "payload trust verification with valid CA bundle (HTTP)",
+			fields: fields{
+				Server: &OpAMPServer{
+					HTTP: &httpFields{
+						commonFields: commonFields{
+							Endpoint: "https://127.0.0.1:4320/v1/opamp",
+						},
+					},
+				},
+				Capabilities: Capabilities{
+					RequiresPayloadTrustVerification: true,
+				},
+				Signing: Signing{CACertFile: caPath},
+			},
+			wantErr: assert.NoError,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -434,11 +464,7 @@ func TestSigning_Validate(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	caPath := filepath.Join(tmpDir, "ca.pem")
-	caCert, _, err := signing.GenerateCA(signing.AlgorithmECDSAP256SHA256, signing.CertOptions{})
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(caPath,
-		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caCert.Raw}),
-		0o600))
+	writeTestCABundle(t, caPath)
 
 	emptyPath := filepath.Join(tmpDir, "empty.pem")
 	require.NoError(t, os.WriteFile(emptyPath, []byte{}, 0o600))
@@ -509,6 +535,22 @@ func TestCapabilities_toAgentCapabilities(t *testing.T) {
 				ReportsAvailableComponents: true,
 			},
 			want: protobufs.AgentCapabilities_AgentCapabilities_ReportsStatus | protobufs.AgentCapabilities_AgentCapabilities_ReportsEffectiveConfig | protobufs.AgentCapabilities_AgentCapabilities_ReportsHealth | protobufs.AgentCapabilities_AgentCapabilities_ReportsAvailableComponents,
+		},
+		{
+			// Regression guard for the previously-silent copy-paste
+			// bug where ReportsAvailableComponents was being sourced
+			// from ReportsEffectiveConfig in the test setup. Setting
+			// only ReportsAvailableComponents=true (with the other
+			// two off) makes the bug observable: the buggy mapping
+			// would produce ReportsStatus alone instead of
+			// ReportsStatus|ReportsAvailableComponents.
+			name: "only ReportsAvailableComponents enabled",
+			fields: fields{
+				ReportsEffectiveConfig:     false,
+				ReportsHealth:              false,
+				ReportsAvailableComponents: true,
+			},
+			want: protobufs.AgentCapabilities_AgentCapabilities_ReportsStatus | protobufs.AgentCapabilities_AgentCapabilities_ReportsAvailableComponents,
 		},
 		{
 			name: "requires payload trust verification",

@@ -257,6 +257,25 @@ func (s OpAMPServer) GetPollingInterval() time.Duration {
 
 // Validate checks if the extension configuration is valid
 func (cfg *Config) Validate() error {
+	// Cross-field check between Capabilities.RequiresPayloadTrustVerification
+	// and Signing.CACertFile. Run before the server switch so this
+	// invariant surfaces independently of whether the operator has the
+	// transport configured correctly. The per-field PEM-parse check
+	// lives on Signing.Validate() and is invoked by confmap's
+	// recursive walk.
+	requires := cfg.Capabilities.RequiresPayloadTrustVerification
+	caFile := cfg.Signing.CACertFile
+	switch {
+	case requires && caFile == "":
+		return errors.New("capabilities::requires_payload_trust_verification requires signing::ca_cert_file")
+	case !requires && caFile != "":
+		return errors.New("signing::ca_cert_file is set but capabilities::requires_payload_trust_verification is false")
+	}
+
+	if cfg.Server == nil {
+		return errors.New("opamp server must be configured")
+	}
+
 	switch {
 	case cfg.Capabilities.AcceptsRestartCommand && !metadata.ExtensionOpampextensionRemoteRestartsFeatureGate.IsEnabled():
 		return errors.New("extension.opampextension.RemoteRestarts feature gate must be enabled to use the accepts_restart_command capability")
@@ -281,18 +300,6 @@ func (cfg *Config) Validate() error {
 		if err != nil {
 			return errors.New("opamp instance_uid is invalid")
 		}
-	}
-
-	// Cross-field check between Capabilities.RequiresPayloadTrustVerification
-	// and Signing.CACertFile. The per-field PEM-parse check lives on
-	// Signing.Validate() and is invoked by confmap's recursive walk.
-	requires := cfg.Capabilities.RequiresPayloadTrustVerification
-	caFile := cfg.Signing.CACertFile
-	switch {
-	case requires && caFile == "":
-		return errors.New("capabilities::requires_payload_trust_verification requires signing::ca_cert_file")
-	case !requires && caFile != "":
-		return errors.New("signing::ca_cert_file is set but capabilities::requires_payload_trust_verification is false")
 	}
 
 	return nil

@@ -134,6 +134,10 @@ func (o *opampAgent) Start(ctx context.Context, host component.Host) error {
 	if err != nil {
 		return fmt.Errorf("build payload trust verifier: %w", err)
 	}
+	if payloadVerifier != nil {
+		o.logger.Info("OpAMP payload trust verification enabled",
+			zap.String("ca_cert_file", o.cfg.Signing.CACertFile))
+	}
 
 	settings := types.StartSettings{
 		Header:          header,
