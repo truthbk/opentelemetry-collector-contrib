@@ -45,18 +45,41 @@ func makeTestSigner(t *testing.T) (*signing.LocalSigner, string) {
 	return signer, caPath
 }
 
+// captureEffectiveConfig returns an OnMessage callback that records
+// the most recent EffectiveConfig payload into store. Used by the
+// reject + happy-path sub-tests below to drive an "agent applied a
+// config" predicate.
+func captureEffectiveConfig(store *atomic.Value) func(context.Context, types.Connection, *protobufs.AgentToServer) *protobufs.ServerToAgent {
+	return func(_ context.Context, _ types.Connection, message *protobufs.AgentToServer) *protobufs.ServerToAgent {
+		if message.EffectiveConfig != nil {
+			if cfgMap := message.EffectiveConfig.ConfigMap.ConfigMap[""]; cfgMap != nil {
+				store.Store(string(cfgMap.Body))
+			}
+		}
+		return &protobufs.ServerToAgent{}
+	}
+}
+
 // newSigningOpAMPServer is the attestation-aware variant of
 // newOpAMPServer: it injects the supplied signing.Signer into
 // server.Settings so outbound ServerToAgent messages are wrapped in
 // SignedServerToAgent envelopes once the supervisor declares the
 // RequiresPayloadTrustVerification capability bit.
+//
+// Divergence from newOpAMPServer: connect/disconnect events go onto a
+// buffered channel with non-blocking sends. Reject scenarios produce
+// repeated reconnect cycles; an unbuffered channel would deadlock the
+// server goroutine once a test stopped consuming. Reject tests should
+// therefore observe disconnect cycles via a user-supplied
+// OnConnectionClose callback (which the wrapper invokes
+// unconditionally) rather than by draining the channel directly.
 func newSigningOpAMPServer(t *testing.T, signer signing.Signer, callbacks types.ConnectionCallbacks) *testingOpAMPServer {
 	t.Helper()
 
 	var agentConn atomic.Value
 	var isAgentConnected atomic.Bool
 	var didShutdown atomic.Bool
-	connectedChan := make(chan bool, 8) // small buffer; reject scenarios may emit several connect/disconnect events
+	connectedChan := make(chan bool, 64) // generous buffer; sends are best-effort (see helper doc above)
 	s := server.New(testLogger{t: t})
 
 	onConnectedFunc := callbacks.OnConnected
@@ -69,7 +92,6 @@ func newSigningOpAMPServer(t *testing.T, signer signing.Signer, callbacks types.
 		}
 		agentConn.Store(conn)
 		isAgentConnected.Store(true)
-		// Best-effort signal; drop if no reader.
 		select {
 		case connectedChan <- true:
 		default:
@@ -105,7 +127,7 @@ func newSigningOpAMPServer(t *testing.T, signer signing.Signer, callbacks types.
 	shutdown := func() {
 		if didShutdown.CompareAndSwap(false, true) {
 			t.Log("Shutting down attestation OpAMP server")
-			assert.NoError(t, s.Stop(context.Background()))
+			assert.NoError(t, s.Stop(t.Context()))
 			httpSrv.Close()
 		}
 	}
@@ -113,7 +135,7 @@ func newSigningOpAMPServer(t *testing.T, signer signing.Signer, callbacks types.
 		if !isAgentConnected.Load() {
 			require.Fail(t, "Agent connection has not been established")
 		}
-		require.NoError(t, agentConn.Load().(types.Connection).Send(context.Background(), msg))
+		require.NoError(t, agentConn.Load().(types.Connection).Send(t.Context(), msg))
 	}
 	t.Cleanup(shutdown)
 
@@ -157,19 +179,6 @@ func (s *e2eTamperingSigner) ChainDER(ctx context.Context) ([][]byte, error) {
 	return s.inner.ChainDER(ctx)
 }
 
-// drainConnectionEvents pulls all pending events from the channel so
-// reject-scenario "wait for disconnect" loops don't pick up a stale
-// "connected" event left over from the initial handshake.
-func drainConnectionEvents(ch chan bool) {
-	for {
-		select {
-		case <-ch:
-		default:
-			return
-		}
-	}
-}
-
 // TestSupervisorPayloadTrustVerification exercises the supervisor's
 // OpAMP Message Attestation wiring (capability bit + signing.ca_cert_file)
 // end-to-end against a real OpAMP server that signs (or fails to sign)
@@ -180,14 +189,7 @@ func TestSupervisorPayloadTrustVerification(t *testing.T) {
 
 		var agentConfig atomic.Value
 		srv := newSigningOpAMPServer(t, serverSigner, types.ConnectionCallbacks{
-			OnMessage: func(_ context.Context, _ types.Connection, message *protobufs.AgentToServer) *protobufs.ServerToAgent {
-				if message.EffectiveConfig != nil {
-					if cfgMap := message.EffectiveConfig.ConfigMap.ConfigMap[""]; cfgMap != nil {
-						agentConfig.Store(string(cfgMap.Body))
-					}
-				}
-				return &protobufs.ServerToAgent{}
-			},
+			OnMessage: captureEffectiveConfig(&agentConfig),
 		})
 
 		s, _ := newSupervisor(t, "payload_attestation", map[string]string{
@@ -223,18 +225,16 @@ func TestSupervisorPayloadTrustVerification(t *testing.T) {
 		_, caPath := makeTestSigner(t)
 
 		var agentConfig atomic.Value
+		var disconnects atomic.Int32
 		// No PayloadSigner on the server — it emits plain
 		// ServerToAgent bytes, which the supervisor's OpAMP client
 		// parses as a SignedServerToAgent envelope missing its trust
-		// chain and rejects.
+		// chain and rejects. The supervisor reconnect-loops; each
+		// failed handshake increments `disconnects`.
 		srv := newOpAMPServer(t, defaultConnectingHandler, types.ConnectionCallbacks{
-			OnMessage: func(_ context.Context, _ types.Connection, message *protobufs.AgentToServer) *protobufs.ServerToAgent {
-				if message.EffectiveConfig != nil {
-					if cfgMap := message.EffectiveConfig.ConfigMap.ConfigMap[""]; cfgMap != nil {
-						agentConfig.Store(string(cfgMap.Body))
-					}
-				}
-				return &protobufs.ServerToAgent{}
+			OnMessage: captureEffectiveConfig(&agentConfig),
+			OnConnectionClose: func(_ types.Connection) {
+				disconnects.Add(1)
 			},
 		})
 
@@ -246,13 +246,35 @@ func TestSupervisorPayloadTrustVerification(t *testing.T) {
 		require.NoError(t, s.Start(t.Context()))
 		t.Cleanup(s.Shutdown)
 
-		// The supervisor must NEVER apply a message that failed
-		// attestation. We use Never so a flaky/transient connection
-		// state can't slip a verified message through.
+		// Positive signal: the supervisor IS trying — at least one
+		// reconnect cycle completed. Without this, a Never assertion
+		// could pass for the wrong reason (supervisor never started).
+		require.Eventually(t, func() bool { return disconnects.Load() >= 1 },
+			10*time.Second, 200*time.Millisecond,
+			"expected at least one reject/reconnect cycle")
+
+		// Push a RemoteConfig so agentConfig has something to be
+		// "never populated by" — if attestation were broken the
+		// supervisor would apply this and report it back via
+		// EffectiveConfig.
+		cfg, hash, _, _ := createSimplePipelineCollectorConf(t)
+		srv.sendToSupervisor(&protobufs.ServerToAgent{
+			RemoteConfig: &protobufs.AgentRemoteConfig{
+				Config: &protobufs.AgentConfigMap{
+					ConfigMap: map[string]*protobufs.AgentConfigFile{
+						"": {Body: cfg.Bytes()},
+					},
+				},
+				ConfigHash: hash,
+			},
+		})
+
+		// Supervisor must NEVER apply the unverified config.
 		require.Never(t, func() bool {
-			return agentConfig.Load() != nil
+			v, ok := agentConfig.Load().(string)
+			return ok && strings.Contains(v, "file_log")
 		}, 4*time.Second, 200*time.Millisecond,
-			"supervisor must not deliver any message that failed attestation")
+			"supervisor must not apply a config that failed attestation")
 	})
 
 	t.Run("Drops on wrong CA", func(t *testing.T) {
@@ -260,14 +282,11 @@ func TestSupervisorPayloadTrustVerification(t *testing.T) {
 		_, otherCAPath := makeTestSigner(t)  // supervisor trusts an independent CA2
 
 		var agentConfig atomic.Value
+		var disconnects atomic.Int32
 		srv := newSigningOpAMPServer(t, serverSigner, types.ConnectionCallbacks{
-			OnMessage: func(_ context.Context, _ types.Connection, message *protobufs.AgentToServer) *protobufs.ServerToAgent {
-				if message.EffectiveConfig != nil {
-					if cfgMap := message.EffectiveConfig.ConfigMap.ConfigMap[""]; cfgMap != nil {
-						agentConfig.Store(string(cfgMap.Body))
-					}
-				}
-				return &protobufs.ServerToAgent{}
+			OnMessage: captureEffectiveConfig(&agentConfig),
+			OnConnectionClose: func(_ types.Connection) {
+				disconnects.Add(1)
 			},
 		})
 
@@ -279,10 +298,27 @@ func TestSupervisorPayloadTrustVerification(t *testing.T) {
 		require.NoError(t, s.Start(t.Context()))
 		t.Cleanup(s.Shutdown)
 
+		require.Eventually(t, func() bool { return disconnects.Load() >= 1 },
+			10*time.Second, 200*time.Millisecond,
+			"expected at least one reject/reconnect cycle")
+
+		cfg, hash, _, _ := createSimplePipelineCollectorConf(t)
+		srv.sendToSupervisor(&protobufs.ServerToAgent{
+			RemoteConfig: &protobufs.AgentRemoteConfig{
+				Config: &protobufs.AgentConfigMap{
+					ConfigMap: map[string]*protobufs.AgentConfigFile{
+						"": {Body: cfg.Bytes()},
+					},
+				},
+				ConfigHash: hash,
+			},
+		})
+
 		require.Never(t, func() bool {
-			return agentConfig.Load() != nil
+			v, ok := agentConfig.Load().(string)
+			return ok && strings.Contains(v, "file_log")
 		}, 4*time.Second, 200*time.Millisecond,
-			"supervisor must reject messages signed by an untrusted CA")
+			"supervisor must not apply a config signed by an untrusted CA")
 	})
 
 	t.Run("Drops on tampered subsequent signature", func(t *testing.T) {
@@ -292,10 +328,15 @@ func TestSupervisorPayloadTrustVerification(t *testing.T) {
 		signer := &e2eTamperingSigner{inner: innerSigner, tamperFromCall: 2}
 
 		var msgCount atomic.Int32
+		var disconnectsBefore atomic.Int32
+		var disconnects atomic.Int32
 		srv := newSigningOpAMPServer(t, signer, types.ConnectionCallbacks{
 			OnMessage: func(_ context.Context, _ types.Connection, _ *protobufs.AgentToServer) *protobufs.ServerToAgent {
 				msgCount.Add(1)
 				return &protobufs.ServerToAgent{}
+			},
+			OnConnectionClose: func(_ types.Connection) {
+				disconnects.Add(1)
 			},
 		})
 
@@ -307,16 +348,23 @@ func TestSupervisorPayloadTrustVerification(t *testing.T) {
 		require.NoError(t, s.Start(t.Context()))
 		t.Cleanup(s.Shutdown)
 
-		// Wait for the first OnMessage (handshake) to land on the
-		// server — proves the supervisor accepted the first signed
-		// envelope.
+		// Wait for the first OnMessage to land — proves the supervisor
+		// accepted the first signed envelope (call #1).
 		require.Eventually(t, func() bool { return msgCount.Load() >= 1 },
 			10*time.Second, 100*time.Millisecond,
 			"supervisor should accept the first signed envelope")
 
-		// Drain "connected" events from the handshake so the
-		// disconnect we wait for below isn't masked.
-		drainConnectionEvents(srv.supervisorConnected)
+		// Pin the tamper boundary: only one Sign call has happened so
+		// far (the handshake response). If a future server-side
+		// keepalive added an extra Sign here, tamperFromCall: 2 would
+		// silently shift meaning and the test would assert against the
+		// wrong message. Fail loudly instead.
+		require.Equal(t, int32(1), signer.callN.Load(),
+			"tamper-from-call=2 assumes exactly one Sign before the explicit push")
+
+		// Snapshot the disconnect count so we observe a NEW disconnect
+		// (not one left over from any pre-handshake retry).
+		disconnectsBefore.Store(disconnects.Load())
 
 		// Server-initiated push with a corrupted signature; the
 		// supervisor's WS receive loop will reject and terminate.
@@ -324,11 +372,9 @@ func TestSupervisorPayloadTrustVerification(t *testing.T) {
 			CustomMessage: &protobufs.CustomMessage{Capability: "test/tamper"},
 		})
 
-		select {
-		case state := <-srv.supervisorConnected:
-			require.False(t, state, "expected a disconnect after tampered signature")
-		case <-time.After(10 * time.Second):
-			t.Fatal("supervisor did not disconnect on tampered signature")
-		}
+		require.Eventually(t, func() bool {
+			return disconnects.Load() > disconnectsBefore.Load()
+		}, 10*time.Second, 100*time.Millisecond,
+			"supervisor should disconnect after the tampered envelope")
 	})
 }
