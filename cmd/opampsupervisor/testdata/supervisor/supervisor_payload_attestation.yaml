@@ -14,10 +14,3 @@ storage:
 
 agent:
   executable: ../../bin/otelcontribcol_{{.goos}}_{{.goarch}}{{.extension}}
-
-telemetry:
-  logs:
-    level: {{.log_level}}
-    output_paths:
-      - '{{.log_file}}'
-      - 'stdout'
