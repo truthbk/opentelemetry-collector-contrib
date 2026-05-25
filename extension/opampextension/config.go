@@ -61,6 +61,12 @@ type Config struct {
 
 // Signing groups the operator-supplied PKI material for OpAMP
 // Message Attestation. Mirror of the supervisor's signing config.
+//
+// Keep in sync with
+// cmd/opampsupervisor/supervisor/config.Signing — supervisor and
+// extension expose the same YAML surface to operators. The
+// duplication is intentional today (independent modules); revisit
+// when a third consumer materialises (see the plan's appendix).
 type Signing struct {
 	// CACertFile is the filesystem path to a PEM-encoded X.509 CA
 	// bundle. Every cert in the bundle becomes a trust anchor for

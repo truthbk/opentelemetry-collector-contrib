@@ -67,6 +67,33 @@ extensions:
         endpoint: wss://127.0.0.1:4320/v1/opamp
 ```
 
+### Example with OpAMP Message Attestation (X.509 payload trust verification)
+
+When the OpAMP server signs the messages it sends to the agent (per
+the spec's Message Attestation section), enable verification by
+setting both `capabilities.requires_payload_trust_verification: true`
+and `signing.ca_cert_file: <path>`. The extension validates the X.509
+chain on the first `SignedServerToAgent` envelope of each connection
+and verifies the detached signature on every subsequent envelope.
+
+``` yaml
+extensions:
+  opamp:
+    server:
+      ws:
+        endpoint: wss://opamp.example.com:4320/v1/opamp
+    capabilities:
+      requires_payload_trust_verification: true
+    signing:
+      ca_cert_file: /etc/otelcol/opamp-trust.pem
+```
+
+**Security boundary**: Message Attestation provides _authenticity_
+and _integrity_ of server-to-agent messages, not _confidentiality_.
+Use TLS (`wss://` / `https://` endpoints) when the channel itself
+carries sensitive information; attestation is complementary to, not
+a replacement for, TLS.
+
 ## Custom Messages
 
 Other components may use a configured OpAMP extension to send and receive custom messages to and from an OpAMP server.

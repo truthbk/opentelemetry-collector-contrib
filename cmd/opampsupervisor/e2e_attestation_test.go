@@ -66,6 +66,13 @@ func captureEffectiveConfig(store *atomic.Value) func(context.Context, types.Con
 // SignedServerToAgent envelopes once the supervisor declares the
 // RequiresPayloadTrustVerification capability bit.
 //
+// Returns the server plus a `negotiated` channel that closes after
+// the first OnMessage lands on the server — equivalent to saying
+// "server-side markNegotiated has been called". Callers that want
+// to push server-initiated messages via sendToSupervisor MUST wait
+// on this channel first, otherwise Send may trip opamp-go's
+// ErrSendBeforeNegotiated guard.
+//
 // Divergence from newOpAMPServer: connect/disconnect events go onto a
 // buffered channel with non-blocking sends. Reject scenarios produce
 // repeated reconnect cycles; an unbuffered channel would deadlock the
@@ -73,13 +80,15 @@ func captureEffectiveConfig(store *atomic.Value) func(context.Context, types.Con
 // therefore observe disconnect cycles via a user-supplied
 // OnConnectionClose callback (which the wrapper invokes
 // unconditionally) rather than by draining the channel directly.
-func newSigningOpAMPServer(t *testing.T, signer signing.Signer, callbacks types.ConnectionCallbacks) *testingOpAMPServer {
+func newSigningOpAMPServer(t *testing.T, signer signing.Signer, callbacks types.ConnectionCallbacks) (*testingOpAMPServer, <-chan struct{}) {
 	t.Helper()
 
 	var agentConn atomic.Value
 	var isAgentConnected atomic.Bool
 	var didShutdown atomic.Bool
+	var negotiatedOnce atomic.Bool
 	connectedChan := make(chan bool, 64) // generous buffer; sends are best-effort (see helper doc above)
+	negotiatedChan := make(chan struct{})
 	s := server.New(testLogger{t: t})
 
 	onConnectedFunc := callbacks.OnConnected
@@ -96,6 +105,18 @@ func newSigningOpAMPServer(t *testing.T, signer signing.Signer, callbacks types.
 		case connectedChan <- true:
 		default:
 		}
+	}
+	onMessageFunc := callbacks.OnMessage
+	callbacks.OnMessage = func(ctx context.Context, conn types.Connection, msg *protobufs.AgentToServer) *protobufs.ServerToAgent {
+		// First OnMessage implies server-side markNegotiated has
+		// been called; Send is now safe.
+		if negotiatedOnce.CompareAndSwap(false, true) {
+			close(negotiatedChan)
+		}
+		if onMessageFunc != nil {
+			return onMessageFunc(ctx, conn, msg)
+		}
+		return &protobufs.ServerToAgent{}
 	}
 	onConnectionCloseFunc := callbacks.OnConnectionClose
 	callbacks.OnConnectionClose = func(conn types.Connection) {
@@ -146,7 +167,7 @@ func newSigningOpAMPServer(t *testing.T, signer signing.Signer, callbacks types.
 		sendToSupervisor:    send,
 		start:               httpSrv.Start,
 		shutdown:            shutdown,
-	}
+	}, negotiatedChan
 }
 
 // e2eTamperingSigner wraps another signer and corrupts the signature
@@ -188,7 +209,7 @@ func TestSupervisorPayloadTrustVerification(t *testing.T) {
 		serverSigner, caPath := makeTestSigner(t)
 
 		var agentConfig atomic.Value
-		srv := newSigningOpAMPServer(t, serverSigner, types.ConnectionCallbacks{
+		srv, negotiated := newSigningOpAMPServer(t, serverSigner, types.ConnectionCallbacks{
 			OnMessage: captureEffectiveConfig(&agentConfig),
 		})
 
@@ -200,7 +221,14 @@ func TestSupervisorPayloadTrustVerification(t *testing.T) {
 		require.NoError(t, s.Start(t.Context()))
 		t.Cleanup(s.Shutdown)
 
-		waitForSupervisorConnection(srv.supervisorConnected, true)
+		// Wait for the supervisor's first AgentToServer to land on
+		// the server — that's when server-side markNegotiated runs,
+		// after which sendToSupervisor is safe.
+		select {
+		case <-negotiated:
+		case <-time.After(10 * time.Second):
+			t.Fatal("supervisor did not complete attestation negotiation within 10s")
+		}
 
 		cfg, hash, _, _ := createSimplePipelineCollectorConf(t)
 		srv.sendToSupervisor(&protobufs.ServerToAgent{
@@ -283,7 +311,9 @@ func TestSupervisorPayloadTrustVerification(t *testing.T) {
 
 		var agentConfig atomic.Value
 		var disconnects atomic.Int32
-		srv := newSigningOpAMPServer(t, serverSigner, types.ConnectionCallbacks{
+		// negotiated will never close in this scenario (no message
+		// ever passes verification) — discard it.
+		srv, _ := newSigningOpAMPServer(t, serverSigner, types.ConnectionCallbacks{
 			OnMessage: captureEffectiveConfig(&agentConfig),
 			OnConnectionClose: func(_ types.Connection) {
 				disconnects.Add(1)
@@ -327,14 +357,9 @@ func TestSupervisorPayloadTrustVerification(t *testing.T) {
 		// every subsequent Sign returns a corrupted signature.
 		signer := &e2eTamperingSigner{inner: innerSigner, tamperFromCall: 2}
 
-		var msgCount atomic.Int32
 		var disconnectsBefore atomic.Int32
 		var disconnects atomic.Int32
-		srv := newSigningOpAMPServer(t, signer, types.ConnectionCallbacks{
-			OnMessage: func(_ context.Context, _ types.Connection, _ *protobufs.AgentToServer) *protobufs.ServerToAgent {
-				msgCount.Add(1)
-				return &protobufs.ServerToAgent{}
-			},
+		srv, negotiated := newSigningOpAMPServer(t, signer, types.ConnectionCallbacks{
 			OnConnectionClose: func(_ types.Connection) {
 				disconnects.Add(1)
 			},
@@ -349,10 +374,14 @@ func TestSupervisorPayloadTrustVerification(t *testing.T) {
 		t.Cleanup(s.Shutdown)
 
 		// Wait for the first OnMessage to land — proves the supervisor
-		// accepted the first signed envelope (call #1).
-		require.Eventually(t, func() bool { return msgCount.Load() >= 1 },
-			10*time.Second, 100*time.Millisecond,
-			"supervisor should accept the first signed envelope")
+		// accepted the first signed envelope (call #1) AND that
+		// markNegotiated has been called server-side so sendToSupervisor
+		// is safe.
+		select {
+		case <-negotiated:
+		case <-time.After(10 * time.Second):
+			t.Fatal("supervisor did not complete attestation negotiation within 10s")
+		}
 
 		// Pin the tamper boundary: only one Sign call has happened so
 		// far (the handshake response). If a future server-side

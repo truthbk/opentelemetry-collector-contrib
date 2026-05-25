@@ -207,6 +207,12 @@ func (o *opampAgent) Start(ctx context.Context, host component.Host) error {
 // supplies a CA bundle). It returns (nil, nil) when attestation is
 // not enabled — the OpAMP client's PayloadVerifier field is then left
 // nil and the wire format stays byte-identical to upstream OpAMP.
+//
+// Keep in sync with
+// cmd/opampsupervisor/supervisor.(*Supervisor).buildPayloadVerifier —
+// the two helpers have identical bodies because they wire the same
+// shared signing.VerifierFromFile call. See the plan's appendix for
+// the "rule of three" deferral on extracting this to a common helper.
 func (o *opampAgent) buildPayloadVerifier() (signing.Verifier, error) {
 	if !o.cfg.Capabilities.RequiresPayloadTrustVerification {
 		return nil, nil

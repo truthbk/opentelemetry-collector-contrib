@@ -181,8 +181,32 @@ config keys are required and must be set together:
 The supervisor's `Validate()` rejects mismatched configurations
 (capability without CA file, CA file without capability, missing or
 unparseable CA file) at startup so misconfiguration cannot reach the
-wire. When both keys are absent the wire format is byte-identical to
-upstream OpAMP.
+wire. When both keys are absent the OpAMP wire format is unchanged
+from when the capability is disabled.
+
+Example supervisor config snippet:
+
+```yaml
+server:
+  endpoint: wss://opamp.example.com:4320/v1/opamp
+
+capabilities:
+  requires_payload_trust_verification: true
+
+signing:
+  ca_cert_file: /etc/otelcol/opamp-trust.pem
+
+agent:
+  executable: /usr/bin/otelcol-contrib
+```
+
+**Security boundary**: Message Attestation provides _authenticity_
+and _integrity_ of server-to-agent messages — the supervisor knows
+which signing key produced each payload, and that the payload was
+not tampered with. It does not provide _confidentiality_. Use TLS
+(`wss://` / `https://` endpoints) when the channel itself carries
+sensitive information; attestation is complementary to, not a
+replacement for, TLS.
 
 ### Supervisor specification features
 
