@@ -406,4 +406,53 @@ func TestSupervisorPayloadTrustVerification(t *testing.T) {
 		}, 10*time.Second, 100*time.Millisecond,
 			"supervisor should disconnect after the tampered envelope")
 	})
+
+	t.Run("Accepts signed handshake over HTTP transport", func(t *testing.T) {
+		// Mirror of the WS happy-path test but exercises the HTTP
+		// polling transport. The supervisor's HTTP receive path has
+		// its own attestation-reset logic (httpsender.go:Reset on
+		// attestation failure) that's not exercised by the WS
+		// tests — this is the wire-up smoke for that path.
+		serverSigner, caPath := makeTestSigner(t)
+
+		var agentConfig atomic.Value
+		srv, negotiated := newSigningOpAMPServer(t, serverSigner, types.ConnectionCallbacks{
+			OnMessage: captureEffectiveConfig(&agentConfig),
+		})
+
+		s, _ := newSupervisor(t, "payload_attestation_http", map[string]string{
+			"url":          srv.addr,
+			"storage_dir":  t.TempDir(),
+			"ca_cert_file": caPath,
+		})
+		require.NoError(t, s.Start(t.Context()))
+		t.Cleanup(s.Shutdown)
+
+		select {
+		case <-negotiated:
+		case <-time.After(15 * time.Second):
+			// HTTP polling has a 30s default interval, but the
+			// supervisor's first poll is essentially immediate after
+			// Start. Give it a bit more headroom than the WS case.
+			t.Fatal("supervisor did not complete attestation negotiation over HTTP within 15s")
+		}
+
+		cfg, hash, _, _ := createSimplePipelineCollectorConf(t)
+		srv.sendToSupervisor(&protobufs.ServerToAgent{
+			RemoteConfig: &protobufs.AgentRemoteConfig{
+				Config: &protobufs.AgentConfigMap{
+					ConfigMap: map[string]*protobufs.AgentConfigFile{
+						"": {Body: cfg.Bytes()},
+					},
+				},
+				ConfigHash: hash,
+			},
+		})
+
+		require.Eventually(t, func() bool {
+			v, ok := agentConfig.Load().(string)
+			return ok && strings.Contains(v, "file_log")
+		}, 30*time.Second, 1*time.Second,
+			"supervisor should apply the signed remote config over HTTP within 30s")
+	})
 }
