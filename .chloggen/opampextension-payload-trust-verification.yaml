@@ -1,0 +1,23 @@
+change_type: enhancement
+
+component: extension/opampextension
+
+note: Add OpAMP Message Attestation support (X.509 payload trust verification).
+
+issues: []
+
+subtext: |
+  The extension can now require the OpAMP server to sign every
+  `ServerToAgent` message. Enable by setting:
+
+    capabilities:
+      requires_payload_trust_verification: true
+    signing:
+      ca_cert_file: /path/to/ca.pem
+
+  The extension validates the X.509 chain on the first
+  `SignedServerToAgent` envelope of each connection and verifies the
+  detached signature on every subsequent envelope. The wire format is
+  unchanged when the capability is disabled.
+
+change_logs: [user]

@@ -1,0 +1,3 @@
+# Built smoke-test server binary; the orchestrator script builds it
+# into $TMPDIR at runtime — keep the source tree binary-free.
+smoke-test-opamp-attestation-server

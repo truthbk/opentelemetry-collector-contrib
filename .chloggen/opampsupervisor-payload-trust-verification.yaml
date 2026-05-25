@@ -1,0 +1,24 @@
+change_type: enhancement
+
+component: cmd/opampsupervisor
+
+note: Add OpAMP Message Attestation support (X.509 payload trust verification).
+
+issues: []
+
+subtext: |
+  Operators can now enable per-message X.509 trust verification of the
+  OpAMP server's `ServerToAgent` messages by setting:
+
+    capabilities:
+      requires_payload_trust_verification: true
+    signing:
+      ca_cert_file: /path/to/ca.pem
+
+  When enabled, every `ServerToAgent` arrives wrapped in a
+  `SignedServerToAgent` envelope; the supervisor validates the X.509
+  chain on the first envelope of each connection and verifies the
+  detached signature on every subsequent envelope. The wire format is
+  unchanged when the capability is disabled.
+
+change_logs: [user]
